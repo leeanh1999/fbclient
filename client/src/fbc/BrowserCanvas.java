@@ -26,6 +26,16 @@ class BrowserCanvas extends Canvas implements Runnable {
     private static final int REPEAT_DELAY = 8;
     private static final int REPEAT_EVERY = 4;
     private static final int OFFER_MS = 15000;
+    // BlackBerry trackpad: one swipe fires many arrow events; drop extras
+    // while the previous move is still in flight.
+    private static final int TRACKPAD_GAP_MS = 150;
+    private long lastMoveAt;
+
+    private Image logo;
+    private volatile boolean alive = true;
+    // Busy indicator area, top-right corner.
+    private static final int BUSY_W = 30;
+    private static final int BUSY_H = 14;
 
     private static final int[] FOOTER = {Icons.MENU, Icons.HOME, Icons.BACK};
 
@@ -81,16 +91,26 @@ class BrowserCanvas extends Canvas implements Runnable {
         touchMode = touch;
         barH = touch ? Math.max(font.getHeight() + 22, 46) : 0;
         menu = new MenuOverlay(!touch);
+        try {
+            logo = Image.createImage("/icon.png");
+        } catch (Exception e) {
+            // Splash without logo.
+        }
         toast(touch ? "Tap = click, hold = video, drag = scroll"
-                : "Arrows = move  5 = open  * = Menu");
+                : (app.blackberry ? "Trackpad = move  A = Menu" : "Arrows = move  5 = open  * = Menu"));
         // Plain thread instead of an anonymous TimerTask: KEmulator fails to
         // load nested classes.
         new Thread(this).start();
     }
 
     /** Tick loop: key repeat, long-press, animations, toast expiry. */
+    /** Ends the tick thread (app exit). */
+    void dispose() {
+        alive = false;
+    }
+
     public void run() {
-        while (true) {
+        while (alive) {
             try {
                 Thread.sleep(TICK_MS);
             } catch (InterruptedException e) {
@@ -231,7 +251,12 @@ class BrowserCanvas extends Canvas implements Runnable {
         } else {
             g.setFont(font);
             g.setColor(0x1877F2);
-            g.drawString("Loading...", w / 2, vh / 2, Graphics.BASELINE | Graphics.HCENTER);
+            int ty = vh / 2;
+            if (logo != null) {
+                g.drawImage(logo, w / 2, vh / 2, Graphics.BOTTOM | Graphics.HCENTER);
+                ty += font.getHeight() + 8;
+            }
+            g.drawString("Loading...", w / 2, ty, Graphics.BASELINE | Graphics.HCENTER);
         }
 
         if (offerShown()) {
@@ -248,7 +273,7 @@ class BrowserCanvas extends Canvas implements Runnable {
             int phase = (int) ((System.currentTimeMillis() / 150) % 3);
             for (int i = 0; i < 3; i++) {
                 g.setColor(i == phase ? 0x1877F2 : 0xA0B8E0);
-                g.fillRect(w - 26 + i * 8, 4, 6, 6);
+                g.fillRect(w - BUSY_W + 4 + i * 8, 4, 6, 6);
             }
         }
 
@@ -337,14 +362,15 @@ class BrowserCanvas extends Canvas implements Runnable {
             offerUntil = 0;
             dirty = true;
         }
-        if (app.net != null && app.net.userBusy) {
-            dirty = true;
-        }
         if (easeScroll()) {
             dirty = true;
         }
         if (dirty) {
             repaint();
+        } else if (app.net != null && app.net.userBusy) {
+            // Only the busy dots: a full 640x480 redraw 25 times a second
+            // takes CPU from downloading/decoding the frame on slow phones.
+            repaint(getWidth() - BUSY_W, 0, BUSY_W, BUSY_H);
         }
     }
 
@@ -361,6 +387,11 @@ class BrowserCanvas extends Canvas implements Runnable {
     // ---- Actions ----
 
     private void move(char d) {
+        long now = System.currentTimeMillis();
+        if (app.blackberry && now - lastMoveAt < TRACKPAD_GAP_MS && !app.net.idle()) {
+            return;
+        }
+        lastMoveAt = now;
         app.net.action("op=move&d=" + d);
     }
 
@@ -419,12 +450,13 @@ class BrowserCanvas extends Canvas implements Runnable {
     }
 
     private void menuKey(int k) {
-        if (isLeftSoft(k) || isRightSoft(k) || k == KEY_STAR || k == KEY_POUND) {
+        if (isLeftSoft(k) || isRightSoft(k) || k == KEY_STAR || k == KEY_POUND
+                || k == KEY_ESC || k == KEY_BACKSPACE) {
             closeMenu();
             return;
         }
         int ga = gameAction(k);
-        if (k == KEY_NUM5 || ga == FIRE) {
+        if (k == KEY_NUM5 || ga == FIRE || isEnter(k)) {
             menuActivate(menu.selectedAction());
             return;
         }
@@ -449,6 +481,14 @@ class BrowserCanvas extends Canvas implements Runnable {
         return k == -7 || k == -22 || k == 22 || k == 57346;
     }
 
+    // QWERTY keys (Nokia E6, BlackBerry): Enter presses, Escape/Backspace go back.
+    private static final int KEY_BACKSPACE = 8;
+    private static final int KEY_ESC = 27;
+
+    private static boolean isEnter(int k) {
+        return k == 10 || k == 13;
+    }
+
     private int gameAction(int k) {
         try {
             return getGameAction(k);
@@ -458,13 +498,14 @@ class BrowserCanvas extends Canvas implements Runnable {
     }
 
     protected void keyPressed(int k) {
+        k = app.mapKey(k);
         if (menu.open) {
             menuKey(k);
             return;
         }
         touchMode = false;
         int ga = gameAction(k);
-        boolean fire = k == KEY_NUM5 || (ga == FIRE && (k < KEY_NUM0 || k > KEY_NUM9));
+        boolean fire = k == KEY_NUM5 || isEnter(k) || (ga == FIRE && (k < KEY_NUM0 || k > KEY_NUM9));
         if (offerShown()) {
             if (fire) {
                 playOffer();
@@ -476,7 +517,7 @@ class BrowserCanvas extends Canvas implements Runnable {
             openMenu();
             return;
         }
-        if (isRightSoft(k) || k == KEY_POUND || k == KEY_NUM1) {
+        if (isRightSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_ESC || k == KEY_BACKSPACE) {
             app.net.action("op=back");
             return;
         }

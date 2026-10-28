@@ -22,8 +22,10 @@ class MenuOverlay {
     static final int EXIT = 9;
     static final int HOME = 10;
 
+    // Short labels: BlackBerry's smallest system font is large, and longer
+    // ones forced fewer columns (more rows, so tiny icons).
     private static final String[] LABELS = {
-        "Type text", "Enter", "Go to URL", "Messenger", "Play video",
+        "Type", "Enter", "URL", "Messenger", "Video",
         "Live", "Forward", "Reload", "Settings", "Exit", "Home"
     };
     private static final int[] ICON = {
@@ -48,7 +50,7 @@ class MenuOverlay {
     private int slide; // remaining slide-in offset, px
 
     // Layout (recomputed on paint)
-    private int cols, rows, tileW, tileH, panelY;
+    private int cols, rows, tileW, tileH, panelY, iconD;
 
     MenuOverlay(boolean withHome) {
         // Devices without the touch footer also need Home in the menu.
@@ -110,10 +112,22 @@ class MenuOverlay {
     }
 
     private void layout(int w, int vh, Font font) {
-        cols = w >= 480 ? 5 : (w >= 300 ? 4 : 3);
+        // As many columns as the widest label allows: BlackBerry's system
+        // font is much wider than S60's at the same screen width.
+        int widest = 0;
+        for (int i = 0; i < items.length; i++) {
+            widest = Math.max(widest, font.stringWidth(LABELS[items[i]]));
+        }
+        cols = Math.max(3, Math.min(5, w / (widest + 16)));
         rows = (items.length + cols - 1) / cols;
         tileW = w / cols;
-        tileH = Math.min(font.getHeight() + 58, (vh * 3 / 4 - HEADER_H) / rows);
+        int fh = font.getHeight();
+        // Icon in proportion to the text (about twice its height), then
+        // shrunk only if the rows would not fit in 85% of the view.
+        iconD = Math.max(28, Math.min(72, Math.min(fh * 2, tileW - 16)));
+        int maxTileH = (vh * 85 / 100 - HEADER_H - 8) / rows;
+        tileH = Math.min(iconD + fh + 16, maxTileH);
+        iconD = Math.max(20, Math.min(iconD, tileH - fh - 14));
         panelY = vh - HEADER_H - rows * tileH - 8;
     }
 
@@ -136,7 +150,7 @@ class MenuOverlay {
                     w - 12, top + 12, Graphics.TOP | Graphics.RIGHT);
         }
 
-        int d = Math.max(20, Math.min(44, tileH - font.getHeight() - 14));
+        int d = iconD;
         for (int i = 0; i < items.length; i++) {
             int a = items[i];
             int tx = (i % cols) * tileW;
@@ -152,7 +166,7 @@ class MenuOverlay {
             Icons.drawSmooth(g, Icons.CIRCLE, cx, cy, d, circle, circle);
             int fg = on ? 0xFFFFFF : (a == MESSENGER ? C_BLUE : (a == EXIT ? 0xE41E3F : C_TEXT));
             Icons.drawSmooth(g, ICON[a], cx, cy, d * 11 / 20, fg, circle);
-            String label = a == LIVE ? (live ? "Live: ON" : "Live: OFF") : LABELS[a];
+            String label = a == LIVE && live ? "Live ON" : LABELS[a];
             g.setColor(showSel && i == sel ? C_BLUE : (on ? C_BLUE : C_TEXT));
             g.drawString(shorten(label, font, tileW - 4), cx, cy + d / 2 + 4,
                     Graphics.TOP | Graphics.HCENTER);

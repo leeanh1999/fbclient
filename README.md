@@ -2,7 +2,7 @@
 
 ```
 [J2ME phone] --HTTP--> [server: Node + headless Chromium] ----------------------------> facebook.com
-   shows JPEG/PNG          renders page, executes click/scroll/type   (local dev: via SOCKS5)
+   shows JPEG/PNG          renders page, executes click/scroll/type
 ```
 
 ## Install the app
@@ -35,8 +35,8 @@ npm install
 npx playwright install chromium   # fallback if Chrome is missing
 npm start                         # listens on :8080
 ```
-Env vars: `PORT` (8080), `PROXY` (local runs only, default socks5://host:port because
-Facebook is blocked on the dev machine; ignored with `NODE_ENV=production`, i.e. in Docker),
+Env vars: `PORT` (8080), `PROXY` (optional, local runs only, e.g. `socks5://host:port` where
+Facebook is blocked; empty = direct; ignored with `NODE_ENV=production`, i.e. in Docker),
 `TOKEN` (access key, empty = none),
 `HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (30), `CHANNEL` (chrome; empty = bundled Chromium),
 `YTDLP` (yt-dlp), `DATA_DIR` (`server/data`; `/data` in Docker).
@@ -55,7 +55,7 @@ hides "Mở ứng dụng" / "Open app" buttons, and implements D-pad focus navig
 Video: pressing a video (tap or 5 on a focused video) does not touch the page; the server answers
 `X-Video-Offer: x,y,w,h` and the phone draws a play button over it. That button sends `op=video`,
 which takes the MP4 from the player's `data-video-url` (or a `/videos/`, `/reel/`, `watch?v=` link),
-downloads it with yt-dlp (through the proxy when running locally) into `<DATA_DIR>/video/` (kept 24h). As soon as the MP4
+downloads it with yt-dlp (through `PROXY` when set) into `<DATA_DIR>/video/` (kept 24h). As soon as the MP4
 header (`moov`, at the front of Facebook's progressive files) plus 128 KB have arrived, `/vs` says
 `ready <w> <h>` and `/v/<k>.mp4` streams the growing file (HTTP/1.0, no length), so playback starts
 during the download; once complete it is served with Range support. The phone fits the video to the
@@ -63,7 +63,14 @@ screen with that size. `op=nextvideo` (player's Next) takes the next not-yet-pla
 page (`data-video-id`/`data-video-url`), loading more of the feed or swiping reels when needed.
 `YTDLP_EXTRA_ARGS` passes extra yt-dlp options (e.g. `--limit-rate 2M`).
 
-API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
+API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&r=&hash=&key=&op=...`
+
+`r=1.5` / `r=2` (Settings → Resolution → 2/3 / Half): the page is rendered with 1/r of the device
+scale factor, so the image is 2/3 or 1/2 of the phone's size per side (~44% / 25% of the pixels
+to send and decode) with JPEG quality at least 80 (scaling magnifies artifacts); the phone scales
+it back up once per frame (`Net.fitScreen`: x1.5 turns every 2 pixels into 3, x2 every pixel
+into 2, new pixels averaging their neighbours). Coordinates in requests and headers stay in phone px.
+Changing `r`, like `w`/`h`/`z`/`ov`, relaunches that phone's browser.
 | op | params | action |
 |---|---|---|
 | (none) | | screenshot |
@@ -81,7 +88,9 @@ API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
 Responses: `200` image, `204` unchanged (same `hash`); headers `X-Url`, `X-Hash`, `X-Oy`,
 `X-Focus: x,y,w,h` (D-pad focus in image px, drawn by the phone, so moving it needs no new frame).
 
-Overscan (`ov` = % of view height, client sends 100, or 50 after running out of memory): in the mobile view the viewport is rendered
+Overscan (`ov` = % of view height, client sends 100, or 50 after running out of memory, when frames
+average over 450 ms to download + decode (e.g. Nokia E6), or when Settings → Frame size is "Short";
+saved in RMS since a change relaunches the browser on the server): in the mobile view the viewport is rendered
 `ov`% taller above and below the phone's view; `X-Oy` says where the view starts in the image.
 `op=scroll` moves the view inside that buffer and re-centres it by scrolling the window (falls back
 to mouse wheel for inner scroll areas). Off in the desktop/Messenger view.
@@ -98,9 +107,14 @@ Offline build for emulators only (JDK only, no downloads; class version 48, not 
 sh client/build-emu.sh [dev|prod]
 ```
 
-Server URL is fixed at build time (JAD/manifest attribute `FbClient-Server`), not editable in the app:
+Default server URL is set at build time (JAD/manifest attribute `FbClient-Server`) and can be
+changed in Menu → Settings → Server (empty = back to the build default; `http://` is added if missing):
 - `dev` (default): `http://127.0.0.1:8080`
 - `prod`: `SERVER_URL` from env or `client/prod.conf` (`http://10.15.188.183:5080`)
+
+BlackBerry (detected from `microedition.platform`): every connection gets a transport suffix chosen
+in Settings → Connection: WiFi (`;interface=wifi`, default), mobile data (`;deviceside=true`) or
+BIS/MDS (none). The letter keys W E R / S D F / Z X C act as 1–9, Q as #, A as *.
 
 If the emulator locks the jar: `OUT=dist-new sh client/build-emu.sh`.
 
@@ -124,7 +138,18 @@ long-press = play video under finger. Footer (touch screens): Menu · Home · Ba
 Menu: bottom sheet over the dimmed page with icon tiles — Type text, Enter, Go to URL, Messenger,
 Play video, Live, Forward, Reload, Settings, Exit (+ Home on keypad-only phones). Arrows + FIRE or tap.
 
-Saved across restarts (RMS): access key, zoom, image format, JPEG quality, Live view.
+Settings ends with an on-screen **Save** button. BlackBerry OS 7 ignores a StringItem button's
+command, so there it is a self-drawn `FormButton` (CustomItem), and Escape also saves.
+
+BlackBerry text input is a Form with one field and a **Send** button instead of a TextBox (whose OK
+is only in the BlackBerry-key menu): Enter in the field sends at once and presses Enter on the page;
+Escape sends without Enter; Cancel is in the menu.
+
+Saved across restarts (RMS): server, access key, zoom, image format, JPEG quality, Live view,
+BlackBerry connection.
+
+Text input: the text box has only OK and Cancel (more commands would put them behind S60's
+"Options" soft key). A line break at the end of the text (Enter key) also presses Enter on the page.
 
 Video player (icon bar): Close · −10 s · Play/Pause · +10 s · Next. Keys: 5 = pause, 4/6 = −/+10 s,
 2/8 = volume, 9 = next video, # / soft keys = close.
@@ -135,7 +160,8 @@ Video player (icon bar): Close · −10 s · Play/Pause · +10 s · Next. Keys: 
 | 5 / FIRE | press the focused element (a text field opens the input box, a video shows a play button) |
 | 2 / 8 | scroll up / down |
 | 4 / 6 | scroll left / right |
-| 1, # / right soft | back |
+| 1, # / right soft, Esc, Backspace | back |
+| Enter (QWERTY) | same as 5 / FIRE |
 | 3 | refresh screen |
 | 7 | go to URL |
 | 9 | Enter |

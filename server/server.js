@@ -1,5 +1,5 @@
-// Cloud-rendering backend: headless Chrome renders pages through a SOCKS5
-// proxy and streams screenshots to the J2ME thin client.
+// Cloud-rendering backend: headless Chrome renders pages and streams
+// screenshots to the J2ME thin client.
 'use strict';
 
 const http = require('http');
@@ -10,9 +10,10 @@ const { spawn } = require('child_process');
 const { chromium } = require('playwright');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
-// SOCKS5 proxy for local runs only: Facebook is blocked on the dev machine.
-// Production (the Docker image, NODE_ENV=production) always connects directly.
-const PROXY = process.env.NODE_ENV === 'production' ? '' : (process.env.PROXY || 'socks5://host:port');
+// Optional proxy for local runs (e.g. socks5://host:port where Facebook is
+// blocked). Production (the Docker image, NODE_ENV=production) always
+// connects directly.
+const PROXY = process.env.NODE_ENV === 'production' ? '' : (process.env.PROXY || '');
 const TOKEN = process.env.TOKEN || '';
 const HOME = process.env.HOME_URL || 'https://m.facebook.com/';
 const IDLE_MS = parseInt(process.env.IDLE_MIN || '30', 10) * 60000;
@@ -245,7 +246,10 @@ async function launchView(s, mode) {
   const opts = {
     headless: true,
     viewport: { width: Math.round(s.w / scale), height: hCss + 2 * margin },
-    deviceScaleFactor: scale,
+    // Low resolution (r=1.5 or 2): the image has 1/r of the phone's pixels per
+    // side and the phone scales it up. Coordinates in headers and requests
+    // stay in phone px (view.scale), so only the image shrinks.
+    deviceScaleFactor: scale / s.res,
     isMobile: !desk,
     hasTouch: false,
     userAgent: desk ? UA_DESKTOP : UA_MOBILE,
@@ -260,7 +264,10 @@ async function launchView(s, mode) {
   try {
     ctx = await chromium.launchPersistentContext(dir, opts);
   } catch (e) {
-    if (!opts.channel) throw e;
+    // Fall back only when Chrome is not installed. Any other failure (e.g.
+    // the profile is locked) must not open the profile with Chromium: it
+    // cannot decrypt Chrome's cookies on Windows, so the login is lost.
+    if (!opts.channel || !/is not found|not installed|ENOENT/i.test(e.message)) throw e;
     log('channel', opts.channel, 'unavailable, using bundled chromium:', e.message.split('\n')[0]);
     delete opts.channel;
     ctx = await chromium.launchPersistentContext(dir, opts);
@@ -345,31 +352,45 @@ async function closeSession(s) {
   }
 }
 
-async function createSession(id, w, h, zoom, ov) {
-  const s = { id, w, h, zoom, ov, mode: 'mob', mob: null, desk: null, chain: Promise.resolve(), last: Date.now() };
+async function createSession(id, w, h, zoom, ov, res) {
+  const s = { id, w, h, zoom, ov, res, mode: 'mob', mob: null, desk: null, chain: Promise.resolve(), last: Date.now() };
   const v = await getView(s, 'mob');
   if (v.page.url() === 'about:blank') {
     await v.page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('goto', e.message));
   }
-  log('session created', id, `${w}x${h}@${zoom}%`);
+  log('session created', id, `${w}x${h}@${zoom}%`, res > 1 ? `res 1/${res}` : '');
   return s;
 }
 
-async function getSession(id, w, h, zoom, ov) {
+// Creating or relaunching a session is serialized per phone: /a and /live
+// often arrive together, and two browsers on one profile broke the login.
+const sessionLocks = new Map();
+
+function getSession(id, w, h, zoom, ov, res) {
+  const prev = sessionLocks.get(id) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => openSession(id, w, h, zoom, ov, res));
+  sessionLocks.set(id, next);
+  next.catch(() => {}).then(() => {
+    if (sessionLocks.get(id) === next) sessionLocks.delete(id);
+  });
+  return next;
+}
+
+async function openSession(id, w, h, zoom, ov, res) {
   let s = sessions.get(id);
-  if (s && (s.w !== w || s.h !== h || s.zoom !== zoom || s.ov !== ov)) {
+  if (s && (s.w !== w || s.h !== h || s.zoom !== zoom || s.ov !== ov || s.res !== res)) {
     // Viewport changed: relaunch; profiles on disk keep the login.
     const url = active(s).page.url();
     sessions.delete(id);
     await closeSession(s);
-    s = await createSession(id, w, h, zoom, ov);
+    s = await createSession(id, w, h, zoom, ov, res);
     if (/^https?:/.test(url)) {
       s.pendingSwitch = null;
       if (wantMode(url) === 'desk') await switchMode(s, url);
       else await s.mob.page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
     }
   }
-  if (!s) s = await createSession(id, w, h, zoom, ov);
+  if (!s) s = await createSession(id, w, h, zoom, ov, res);
   sessions.set(id, s);
   s.last = Date.now();
   return s;
@@ -684,6 +705,10 @@ async function nextVideo(s) {
 // previous one, so the phone's download speed sets the frame rate.
 
 const LIVE_MAX_QUALITY = 65;
+// Low-resolution frames (2/3, 1/2) are scaled up on the phone, which
+// magnifies JPEG artifacts; they have far fewer pixels, so a higher quality
+// is cheap.
+const HALF_RES_MIN_QUALITY = 80;
 
 function startLive(req, s, quality) {
   const sock = req.socket;
@@ -736,8 +761,8 @@ async function attachCast(s) {
   await cdp.send('Page.startScreencast', {
     format: 'jpeg',
     quality: s.live ? s.live.quality : LIVE_MAX_QUALITY,
-    maxWidth: s.w,
-    maxHeight: Math.ceil(vp.height * v.scale) + 2,
+    maxWidth: Math.ceil(s.w / s.res),
+    maxHeight: Math.ceil(vp.height * v.scale / s.res) + 2,
     everyNthFrame: 1,
   }).catch((e) => log('screencast', e.message));
 }
@@ -1137,10 +1162,16 @@ async function handle(req, res) {
   const quality = Math.min(Math.max(parseInt(q.get('q') || '75', 10), 10), 95);
   // Overscan % of the view height added above and below (0 = old clients).
   const ov = Math.min(Math.max(parseInt(q.get('ov') || '0', 10), 0), 100);
+  // Render resolution divisor: 1 = full, 1.5 = 2/3, 2 = half per side
+  // (slow phones; the phone scales the image back up).
+  const rs = { 2: 2, 1.5: 1.5 }[q.get('r')] || 1;
   const lastHash = q.get('hash') || '';
 
-  const s = await getSession(id, w, h, zoom, ov);
-  if (u.pathname === '/live') return startLive(req, s, Math.min(quality, LIVE_MAX_QUALITY));
+  const s = await getSession(id, w, h, zoom, ov, rs);
+  if (u.pathname === '/live') {
+    const lq = s.res > 1 ? Math.max(quality, HALF_RES_MIN_QUALITY) : Math.min(quality, LIVE_MAX_QUALITY);
+    return startLive(req, s, lq);
+  }
   // Serialize actions per session.
   const job = s.chain.then(async () => {
     const out = await runAction(s, q);
@@ -1154,7 +1185,7 @@ async function handle(req, res) {
     let img = null;
     if (q.get('op') !== 'move' || out.scrolled) {
       const opts = { type: fmt, timeout: 15000 };
-      if (fmt === 'jpeg') opts.quality = quality;
+      if (fmt === 'jpeg') opts.quality = s.res > 1 ? Math.max(quality, HALF_RES_MIN_QUALITY) : quality;
       img = await page.screenshot(opts);
     }
     const pressed = (q.get('op') === 'click' || q.get('op') === 'activate') && !out.offer;

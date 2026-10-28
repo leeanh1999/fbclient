@@ -44,6 +44,11 @@ class LiveStream implements Runnable {
         app.net.wake();
     }
 
+    /** Drop the current connection; run() reconnects (e.g. new server). */
+    void reconnect() {
+        close();
+    }
+
     public void run() {
         while (running) {
             try {
@@ -66,7 +71,7 @@ class LiveStream implements Runnable {
 
     private void stream() throws Exception {
         String url = app.server + "/live?" + app.net.viewParams();
-        hc = (HttpConnection) Connector.open(url, Connector.READ, true);
+        hc = (HttpConnection) Connector.open(app.connUrl(url), Connector.READ, true);
         hc.setRequestMethod(HttpConnection.GET);
         if (hc.getResponseCode() != HttpConnection.HTTP_OK) {
             throw new Exception("live HTTP " + hc.getResponseCode());
@@ -88,6 +93,8 @@ class LiveStream implements Runnable {
             Image img;
             try {
                 img = Image.createImage(data, 0, len);
+                data = null;
+                img = Net.fitScreen(img, app.canvas.getWidth());
             } catch (OutOfMemoryError e) {
                 data = null;
                 app.overscan = FbMidlet.OVERSCAN_LOW_MEM;

@@ -59,7 +59,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     public void run() {
         try {
             String base = app.server;
-            String statusUrl = base + "/vs?k=" + videoKey + app.keyParam("&");
+            String statusUrl = app.connUrl(base + "/vs?k=" + videoKey + app.keyParam("&"));
             while (!closed) {
                 String st = Net.fetchText(statusUrl).trim();
                 if (st.startsWith("ready")) {
@@ -78,7 +78,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             }
             setStatus("Starting player...");
             String url = base + "/v/" + videoKey + ".mp4" + app.keyParam("?");
-            Player p = Manager.createPlayer(url);
+            Player p = Manager.createPlayer(app.connUrl(url));
             player = p;
             p.addPlayerListener(this);
             p.realize();
@@ -315,8 +315,14 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     }
 
     protected void keyPressed(int k) {
-        if (isSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_STAR) {
+        k = app.mapKey(k);
+        if (isSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_STAR
+                || k == 27 || k == 8) { // Escape / Backspace (QWERTY)
             close();
+            return;
+        }
+        if (k == 10 || k == 13 || k == ' ') { // Enter / Space
+            togglePause();
             return;
         }
         switch (k) {

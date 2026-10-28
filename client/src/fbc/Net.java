@@ -6,6 +6,7 @@ import java.util.Vector;
 
 import javax.microedition.io.Connector;
 import javax.microedition.io.HttpConnection;
+import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
 
 /**
@@ -23,6 +24,12 @@ class Net implements Runnable {
     private static final int LIVE_GAP_MS = 60;    // delay between live frames
     private static final int STABLE_FRAMES = 3;   // unchanged frames to stop burst
     private static final int ERROR_BACKOFF_MS = 2000;
+    // Download + decode of one frame. Slower phones (Nokia E6: ~900 ms for
+    // a 640x1278 overscan frame) get shorter frames: one switch only, as the
+    // server relaunches the browser when the overscan changes.
+    private static final int SLOW_FRAME_MS = 450;
+    private static final int SLOW_SAMPLES = 4;
+    private int loadAvgMs, loadSamples;
 
     private final FbMidlet app;
     private final Vector queue = new Vector();
@@ -181,6 +188,7 @@ class Net implements Runnable {
         sb.append("&w=").append(c.getWidth());
         sb.append("&h=").append(c.viewHeight());
         sb.append("&ov=").append(app.overscan);
+        sb.append(app.resParam());
         sb.append("&z=").append(app.zoom);
         sb.append("&f=").append(app.png ? "png" : "jpg");
         sb.append("&q=").append(app.quality);
@@ -200,7 +208,7 @@ class Net implements Runnable {
         HttpConnection hc = null;
         InputStream in = null;
         try {
-            hc = (HttpConnection) Connector.open(url.toString(), Connector.READ, true);
+            hc = (HttpConnection) Connector.open(app.connUrl(url.toString()), Connector.READ, true);
             hc.setRequestMethod(HttpConnection.GET);
             int code = hc.getResponseCode();
             String u = hc.getHeaderField("X-Url");
@@ -218,11 +226,14 @@ class Net implements Runnable {
 
             boolean changed = false;
             if (code == HttpConnection.HTTP_OK) {
+                long t0 = System.currentTimeMillis();
                 in = hc.openInputStream();
                 byte[] data = readAll(in, (int) hc.getLength());
                 Image img;
                 try {
                     img = Image.createImage(data, 0, data.length);
+                    data = null;
+                    img = fitScreen(img, c.getWidth());
                 } catch (OutOfMemoryError e) {
                     data = null;
                     if (app.overscan > FbMidlet.OVERSCAN_LOW_MEM) {
@@ -240,6 +251,7 @@ class Net implements Runnable {
                 }
                 c.applyFrame(img, oy == null ? 0 : FbMidlet.parseInt(oy, 0), sdy);
                 changed = true;
+                measureLoad((int) (System.currentTimeMillis() - t0), img.getHeight());
             } else if (code == HttpConnection.HTTP_NO_CONTENT) {
                 c.applyFrame(null, 0, sdy);
             } else {
@@ -269,6 +281,103 @@ class Net implements Runnable {
             return changed;
         } finally {
             close(in, hc);
+        }
+    }
+
+    /**
+     * Low-resolution frames are scaled back up to the screen: x2 for half
+     * resolution (r=2), x1.5 for 2/3 (r=1.5; every 2 pixels become 3). New
+     * pixels are averages of their neighbours (nearest neighbour made text
+     * look grainy). Row by row so no full-size int[] is needed; done once
+     * per frame here, so painting stays a plain drawImage.
+     */
+    static Image fitScreen(Image src, int screenW) {
+        int sw = src.getWidth();
+        int sh = src.getHeight();
+        boolean half;
+        if (sw * 2 <= screenW + 2) {
+            half = true;
+        } else if (sw * 3 <= screenW * 2 + 3) {
+            half = false;
+        } else {
+            return src; // full resolution
+        }
+        int dw = half ? sw * 2 : scale15(sw);
+        Image dst = Image.createImage(dw, half ? sh * 2 : scale15(sh));
+        Graphics g = dst.getGraphics();
+        int[] in = new int[sw];
+        int[] cur = new int[dw];
+        int[] next = new int[dw];
+        int[] mid = new int[dw];
+        src.getRGB(in, 0, sw, 0, 0, sw, 1);
+        widen(in, cur, sw, half);
+        int dy = 0;
+        for (int y = 0; y < sh; y++) {
+            boolean more = y + 1 < sh;
+            if (more) {
+                src.getRGB(in, 0, sw, 0, y + 1, sw, 1);
+                widen(in, next, sw, half);
+                for (int i = 0; i < dw; i++) {
+                    mid[i] = mix(cur[i], next[i]);
+                }
+            }
+            g.drawRGB(cur, 0, dw, 0, dy++, dw, 1, false);
+            // x2: a blended row after every row. x1.5: rows go in pairs
+            // (row, blend, next row), so only after even rows.
+            if (half || (more && y % 2 == 0)) {
+                g.drawRGB(more ? mid : cur, 0, dw, 0, dy++, dw, 1, false);
+            }
+            int[] t = cur;
+            cur = next;
+            next = t;
+        }
+        return dst;
+    }
+
+    /** Size after x1.5: each pair of pixels becomes 3, a lone last one 1. */
+    private static int scale15(int n) {
+        return n / 2 * 3 + n % 2;
+    }
+
+    /** One row widened x2 or x1.5; new pixels average their neighbours. */
+    private static void widen(int[] in, int[] out, int sw, boolean half) {
+        int o = 0;
+        if (half) {
+            for (int x = 0; x < sw; x++) {
+                int p = in[x];
+                out[o++] = p;
+                out[o++] = x + 1 < sw ? mix(p, in[x + 1]) : p;
+            }
+            return;
+        }
+        for (int x = 0; x < sw; x += 2) {
+            int p = in[x];
+            out[o++] = p;
+            if (x + 1 < sw) {
+                int q = in[x + 1];
+                out[o++] = mix(p, q);
+                out[o++] = q;
+            }
+        }
+    }
+
+    /** Average of two RGB pixels (per channel, alpha dropped). */
+    private static int mix(int a, int b) {
+        return ((a & 0xFEFEFE) >>> 1) + ((b & 0xFEFEFE) >>> 1);
+    }
+
+    /** Averages frame load time; switches to shorter frames if too slow. */
+    private void measureLoad(int ms, int imgH) {
+        if (!app.frameAuto || app.overscan <= FbMidlet.OVERSCAN_LOW_MEM
+                || imgH <= app.canvas.viewHeight()) {
+            return; // user's choice, already short, or a view without overscan
+        }
+        loadAvgMs = loadSamples == 0 ? ms : (loadAvgMs * 3 + ms) / 4;
+        if (++loadSamples >= SLOW_SAMPLES && loadAvgMs > SLOW_FRAME_MS) {
+            app.overscan = FbMidlet.OVERSCAN_LOW_MEM;
+            app.saveSettings();
+            lastHash = "";
+            app.canvas.toast("Slow frames (" + loadAvgMs + " ms): using smaller ones");
         }
     }
 

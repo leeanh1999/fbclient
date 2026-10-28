@@ -6,6 +6,7 @@ public abstract class Canvas extends Displayable {
     protected Canvas() {}
     protected abstract void paint(Graphics g);
     public final void repaint() {}
+    public final void repaint(int x, int y, int w, int h) {}
     public int getGameAction(int k) { return 0; }
     public void setFullScreenMode(boolean m) {}
     public boolean hasPointerEvents() { return false; }

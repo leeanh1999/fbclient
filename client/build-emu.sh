@@ -38,13 +38,14 @@ Manifest-Version: 1.0
 MIDlet-Name: FbClient
 MIDlet-Vendor: fbclient
 MIDlet-Version: 1.0.0
-MIDlet-1: FbClient, , fbc.FbMidlet
+MIDlet-1: FbClient, /icon.png, fbc.FbMidlet
+MIDlet-Icon: /icon.png
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
 FbClient-Server: $SERVER_URL
 Nokia-MIDlet-On-Screen-Keypad: no
 EOF
-jar cfm build-emu/FbClient.jar build-emu/MANIFEST.MF -C build-emu/classes .
+jar cfm build-emu/FbClient.jar build-emu/MANIFEST.MF -C build-emu/classes . -C res .
 
 # Copy last so a jar locked by a running emulator fails with a clear message.
 if ! cp build-emu/FbClient.jar "$OUT/FbClient.jar" 2>/dev/null; then
@@ -56,7 +57,8 @@ cat > "$OUT/FbClient.jad" <<EOF
 MIDlet-Name: FbClient
 MIDlet-Vendor: fbclient
 MIDlet-Version: 1.0.0
-MIDlet-1: FbClient, , fbc.FbMidlet
+MIDlet-1: FbClient, /icon.png, fbc.FbMidlet
+MIDlet-Icon: /icon.png
 MIDlet-Jar-URL: FbClient.jar
 MIDlet-Jar-Size: $SIZE
 MicroEdition-Profile: MIDP-2.0

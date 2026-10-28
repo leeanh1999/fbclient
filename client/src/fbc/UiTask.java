@@ -10,6 +10,8 @@ class UiTask implements Runnable {
     static final int INPUT = 0;
     static final int VIDEO = 1;
     static final int VIDEO_ERROR = 2;
+    // Run on a plain thread (not the event thread) by FbMidlet.exit().
+    static final int SHUTDOWN = 3;
 
     private final FbMidlet app;
     private final int kind;
@@ -28,6 +30,8 @@ class UiTask implements Runnable {
             app.showTextInput(value, flag);
         } else if (kind == VIDEO) {
             app.openVideo(value);
+        } else if (kind == SHUTDOWN) {
+            app.shutdown();
         } else {
             app.videoError(value);
         }
