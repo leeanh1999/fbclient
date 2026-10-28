@@ -63,8 +63,11 @@ jobs:
           grep -qi '^content-type: image/jpeg' headers.txt
           grep -qi '^x-oy:' headers.txt
           python3 -c "import struct;d=open('frame.jpg','rb').read();i=d.find(b'\xff\xc0');w,h=struct.unpack('>HH',d[i+7:i+9]+d[i+5:i+7]);print('frame',w,'x',h);assert (w,h)==(240,960)"
-          timeout 5 curl -s -o live.bin 'http://127.0.0.1:8080/live?id=ci&w=240&h=320&ov=100' || true
-          head -c 2 live.bin | grep -q '^F ' && echo "live stream OK"
+          curl -s --max-time 8 -o live.bin 'http://127.0.0.1:8080/live?id=ci&w=240&h=320&ov=100' || true
+          echo "live: $(wc -c < live.bin) bytes, header: $(head -c 24 live.bin | head -n 1)"
+          docker logs --tail 20 test
+          head -c 2 live.bin | grep -q '^F '
+          echo "live stream OK"
           docker exec test yt-dlp --version
 
       - name: Clean up
