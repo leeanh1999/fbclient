@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Not a build: only lets Maven download the tools into client/build/lib
+  (build.sh runs dependency:copy-dependencies).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>fbclient</groupId>
+  <artifactId>j2me-tools</artifactId>
+  <version>1</version>
+  <packaging>pom</packaging>
+
+  <dependencies>
+    <!-- Compiles to 1.1 bytecode for CLDC; modern javac can't target below 8. -->
+    <dependency>
+      <groupId>org.eclipse.jdt</groupId>
+      <artifactId>ecj</artifactId>
+      <version>3.26.0</version>
+    </dependency>
+    <!-- CLDC preverification (StackMap), replacing WTK's preverify.exe. -->
+    <dependency>
+      <groupId>com.guardsquare</groupId>
+      <artifactId>proguard-base</artifactId>
+      <version>7.4.2</version>
+    </dependency>
+    <!-- Phone APIs: CLDC 1.1, MIDP 2.0, MMAPI (JSR-135). -->
+    <dependency>
+      <groupId>org.microemu</groupId>
+      <artifactId>cldcapi11</artifactId>
+      <version>2.0.4</version>
+    </dependency>
+    <dependency>
+      <groupId>org.microemu</groupId>
+      <artifactId>midpapi20</artifactId>
+      <version>2.0.4</version>
+    </dependency>
+    <dependency>
+      <groupId>org.microemu</groupId>
+      <artifactId>microemu-jsr-135</artifactId>
+      <version>2.0.4</version>
+    </dependency>
+  </dependencies>
+</project>

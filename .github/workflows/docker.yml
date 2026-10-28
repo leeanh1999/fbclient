@@ -1,0 +1,104 @@
+name: Build Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # Commits touching only the J2ME app or docs don't need a new image
+    # (the NAS would pull and restart for nothing). Tags ignore paths.
+    paths-ignore:
+      - 'client/**'
+      - '.github/workflows/j2me.yml'
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build info
+        id: info
+        run: echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Build amd64 first and actually run it before publishing.
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          load: true
+          tags: fbclient:test
+          build-args: BUILD_VERSION=${{ steps.info.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # CI can't reach Facebook through the private proxy: point PROXY at a
+      # closed port so pages fail fast, then check that Chrome still renders
+      # a frame, the overscan buffer is applied and the live stream answers.
+      - name: Smoke test container
+        run: |
+          docker run -d --name test -p 8080:8080 --shm-size=512m \
+            -e PROXY=socks5://127.0.0.1:9 -e 'HOME_URL=data:text/html,<h1>fbclient</h1>' fbclient:test
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8080/ping >/dev/null 2>&1 && { echo "ready after ${i}s"; break; }
+            sleep 1
+          done
+          docker logs test
+          curl -fsS -D headers.txt -o frame.jpg 'http://127.0.0.1:8080/a?id=ci&w=240&h=320&ov=100'
+          cat headers.txt
+          grep -qi '^content-type: image/jpeg' headers.txt
+          grep -qi '^x-oy:' headers.txt
+          python3 -c "import struct;d=open('frame.jpg','rb').read();i=d.find(b'\xff\xc0');w,h=struct.unpack('>HH',d[i+7:i+9]+d[i+5:i+7]);print('frame',w,'x',h);assert (w,h)==(240,960)"
+          timeout 5 curl -s -o live.bin 'http://127.0.0.1:8080/live?id=ci&w=240&h=320&ov=100' || true
+          head -c 2 live.bin | grep -q '^F ' && echo "live stream OK"
+          docker exec test yt-dlp --version
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f test || true
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      - name: Build and push to GHCR (amd64 + arm64)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: BUILD_VERSION=${{ steps.info.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,76 @@
+name: Build J2ME app
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'client/**'
+      - '.github/workflows/j2me.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/j2me.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ECJ 3.26 and ProGuard 7 run on JDK 11+; Maven only downloads tools.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: client/tools/pom.xml
+
+      # MIDlet-Version only accepts a.b.c: use the tag (v1.2.3) when there
+      # is one, otherwise 1.0.<run number>.
+      - name: Version
+        id: info
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The release build points at the NAS (client/prod.conf).
+      - name: Build jar + jad (prod)
+        run: VERSION=${{ steps.info.outputs.version }} bash client/build.sh prod
+
+      # Real S60 phones only run CLDC classes: version 45 with StackMap
+      # (preverified). Anything newer fails to install without a reason.
+      - name: Check classes are CLDC-compliant
+        run: |
+          mkdir -p /tmp/check && cd /tmp/check && unzip -oq "$GITHUB_WORKSPACE/client/build/FbClient.jar"
+          for f in $(find . -name '*.class'); do
+            javap -v "$f" | grep -q 'major version: 45' || { echo "wrong class version: $f"; exit 1; }
+          done
+          if find . -name '*$*.class' | grep -q .; then echo "nested classes found (KEmulator fails on them)"; exit 1; fi
+          javap -v fbc/Net.class | grep -q StackMap || { echo "not preverified"; exit 1; }
+          grep -q '^FbClient-Server: http://' META-INF/MANIFEST.MF
+          echo "All classes are version 45 with StackMap"; grep '^FbClient-Server' META-INF/MANIFEST.MF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FbClient-${{ steps.info.outputs.version }}-${{ steps.info.outputs.sha }}
+          path: |
+            client/build/FbClient.jar
+            client/build/FbClient.jad
+
+      - name: Attach to release (on v* tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            client/build/FbClient.jar
+            client/build/FbClient.jad

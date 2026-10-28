@@ -1,0 +1,4 @@
+# Scripts run on Linux must be LF; with CRLF the container fails with a
+# confusing "no such file or directory".
+*.sh text eol=lf
+Dockerfile text eol=lf

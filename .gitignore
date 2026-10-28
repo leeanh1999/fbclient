@@ -1,0 +1,28 @@
+# Chrome profiles = Facebook logins of each phone, video cache. NEVER commit.
+server/data/
+data/
+
+# Dependencies
+node_modules/
+
+# J2ME build output and downloaded tools
+client/build/
+client/build-emu/
+client/dist/
+client/dist-new/
+client/tools/*.jar
+client/tools/*.zip
+client/tools/proguard-*/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs, env
+*.log
+npm-debug.log*
+.env
+.env.local

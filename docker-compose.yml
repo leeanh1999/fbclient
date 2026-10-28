@@ -1,0 +1,41 @@
+# Paste this file into Container Manager > Project on Synology.
+# To build on the NAS instead, remove the "image" line and uncomment "build".
+
+services:
+  fbclient:
+    image: ghcr.io/leeanh1999/fbclient:latest
+    # build: ./server
+    container_name: fbclient
+    restart: unless-stopped
+
+    ports:
+      # Left: port on the NAS (the J2ME app's prod build uses 5080).
+      # Right: port inside the container (leave as is).
+      - "5080:8080"
+
+    volumes:
+      # Chrome profiles (Facebook login of each phone) and the video cache.
+      - ./data:/data
+
+    # Chromium needs more shared memory than Docker's 64 MB default.
+    shm_size: "512m"
+
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      # SOCKS5 proxy used to reach Facebook. 100.x is a Tailscale address:
+      # the NAS must be on the same tailnet (Tailscale package for DSM).
+      - PROXY=socks5://host:port
+      # Access key; set it if the port is reachable from outside the LAN, and
+      # enter the same value in the app (Menu > Settings > Access key).
+      # - TOKEN=change-me
+      # Close a phone's browser after this many idle minutes (frees RAM).
+      - IDLE_MIN=30
+      # Update yt-dlp on every start (Facebook changes break old versions).
+      - YTDLP_AUTO_UPDATE=1
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
