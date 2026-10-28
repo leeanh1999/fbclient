@@ -339,9 +339,51 @@ async function runAction(s, q) {
   // At most one view switch per request to avoid ping-pong redirects.
   if (s.pendingSwitch) await switchMode(s, s.pendingSwitch);
   syncView(active(s));
+  await autoplayVideos(active(s));
   // Keep the live stream on whichever view is now active.
   if (s.live) await attachCast(s);
   return out;
+}
+
+// Facebook videos often wait behind their own play button. Start any paused
+// video that is at least half inside the phone's view; each video only once,
+// so one the user paused stays paused.
+async function autoplayVideos(v) {
+  const vp = v.page.viewportSize();
+  if (!vp) return;
+  const top = v.oy;
+  const bottom = v.oy + vp.height - 2 * v.margin;
+  const started = await v.page.evaluate(([t, b]) => {
+    let n = 0;
+    for (const el of document.querySelectorAll('video')) {
+      const r = el.getBoundingClientRect();
+      const visible = Math.min(r.bottom, b) - Math.max(r.top, t);
+      if (r.height < 40 || visible < r.height / 2) continue;
+      if (!el.paused || el.ended || el.dataset.fbcAuto) continue;
+      el.dataset.fbcAuto = '1';
+      // The phone gets no page audio anyway; muted playback is always allowed.
+      el.muted = true;
+      const p = el.play();
+      if (p && p.catch) p.catch(() => {});
+      n++;
+    }
+    return n;
+  }, [top, bottom]).catch(() => 0);
+  if (!started) return;
+  await sleep(500);
+  // Players whose UI ignored play(): tap the video like the user would.
+  const taps = await v.page.evaluate(() => {
+    const out = [];
+    for (const el of document.querySelectorAll('video[data-fbc-auto="1"]')) {
+      if (!el.paused || el.ended || el.dataset.fbcTapped) continue;
+      el.dataset.fbcTapped = '1';
+      const r = el.getBoundingClientRect();
+      out.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+    }
+    return out;
+  }).catch(() => []);
+  for (const p of taps) await v.page.mouse.click(p.x, p.y);
+  if (taps.length) await sleep(300);
 }
 
 // ---- Live view stream ----
