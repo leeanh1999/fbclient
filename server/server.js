@@ -10,7 +10,9 @@ const { spawn } = require('child_process');
 const { chromium } = require('playwright');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
-const PROXY = process.env.PROXY || 'socks5://host:port';
+// SOCKS5 proxy for local runs only: Facebook is blocked on the dev machine.
+// Production (the Docker image, NODE_ENV=production) always connects directly.
+const PROXY = process.env.NODE_ENV === 'production' ? '' : (process.env.PROXY || 'socks5://host:port');
 const TOKEN = process.env.TOKEN || '';
 const HOME = process.env.HOME_URL || 'https://m.facebook.com/';
 const IDLE_MS = parseInt(process.env.IDLE_MIN || '30', 10) * 60000;
@@ -225,7 +227,6 @@ async function launchView(s, mode) {
   const margin = desk ? 0 : Math.round(hCss * s.ov / 100);
   const opts = {
     headless: true,
-    proxy: { server: PROXY },
     viewport: { width: Math.round(s.w / scale), height: hCss + 2 * margin },
     deviceScaleFactor: scale,
     isMobile: !desk,
@@ -234,6 +235,7 @@ async function launchView(s, mode) {
     locale: 'vi-VN',
     args: ['--disable-dev-shm-usage', '--deny-permission-prompts'],
   };
+  if (PROXY) opts.proxy = { server: PROXY };
   if (CHANNEL) opts.channel = CHANNEL;
   // Persistent profiles keep cookies and IndexedDB (Messenger E2EE keys).
   const dir = path.join(PROFILE_DIR, `${s.id}-${mode}`);
@@ -941,7 +943,8 @@ async function downloadVideo(s, url) {
   await writeCookieFile(active(s).ctx, cookies);
   // Prefer the progressive SD stream (H.264 + AAC in one file, no ffmpeg needed).
   const args = [
-    '--proxy', PROXY, '--cookies', cookies, '--no-playlist', '--newline', '--no-part',
+    ...(PROXY ? ['--proxy', PROXY] : []),
+    '--cookies', cookies, '--no-playlist', '--newline', '--no-part',
     '-f', 'sd/b[height<=?480][ext=mp4]/b[ext=mp4]/b',
     ...YTDLP_EXTRA_ARGS,
     '-o', file, url,
@@ -1201,4 +1204,4 @@ http.createServer((req, res) => {
       if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('error: ' + e.message);
     });
-}).listen(PORT, '0.0.0.0', () => log(`listening on :${PORT}, proxy ${PROXY}, channel ${CHANNEL || 'chromium'}`));
+}).listen(PORT, '0.0.0.0', () => log(`listening on :${PORT}, proxy ${PROXY || 'none (direct)'}, channel ${CHANNEL || 'chromium'}`));

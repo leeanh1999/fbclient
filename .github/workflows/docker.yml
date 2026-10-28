@@ -52,18 +52,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # CI can't reach Facebook through the private proxy: point PROXY at a
-      # closed port and use a local page, then check that the browser renders
-      # a frame, the overscan buffer is applied and the live stream answers.
+      # Run as in production (no proxy) on a local page, so the test doesn't
+      # depend on Facebook: check that the browser renders a frame, the
+      # overscan buffer is applied and the live stream answers.
       - name: Smoke test container
         run: |
           docker run -d --name test -p 8080:8080 --shm-size=512m \
-            -e PROXY=socks5://127.0.0.1:9 -e 'HOME_URL=data:text/html,<h1>fbclient</h1>' fbclient:test
+            -e 'HOME_URL=data:text/html,<h1>fbclient</h1>' fbclient:test
           for i in $(seq 1 60); do
             curl -fsS http://127.0.0.1:8080/ping >/dev/null 2>&1 && { echo "ready after ${i}s"; break; }
             sleep 1
           done
           docker logs test
+          docker logs test 2>&1 | grep -q 'proxy none (direct)'
           curl -fsS -D headers.txt -o frame.jpg 'http://127.0.0.1:8080/a?id=ci&w=240&h=320&ov=100'
           cat headers.txt
           grep -qi '^content-type: image/jpeg' headers.txt

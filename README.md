@@ -1,8 +1,8 @@
 # fbclient — J2ME Facebook thin client (Cloud Phone style)
 
 ```
-[J2ME phone] --HTTP--> [server: Node + headless Chromium] --SOCKS5 proxy-host:1080--> facebook.com
-   shows JPEG/PNG          renders page, executes click/scroll/type
+[J2ME phone] --HTTP--> [server: Node + headless Chromium] ----------------------------> facebook.com
+   shows JPEG/PNG          renders page, executes click/scroll/type   (local dev: via SOCKS5)
 ```
 
 ## Install the app
@@ -15,8 +15,7 @@ preverified (class 45 + StackMap) for real phones (Nokia E6 / S60) and point at
 1. Container Manager → Project → Create, paste [`docker-compose.yml`](docker-compose.yml)
    (image `ghcr.io/leeanh1999/fbclient:latest`, **arm64 only**, port **5080**; on an x86 NAS use
    `build: ./server` in the compose file instead of `image`).
-2. The proxy `proxy-host` is a Tailscale address: the NAS must be on the same tailnet
-   (Tailscale package for DSM) for the container to reach it.
+2. The image always connects to Facebook directly (no proxy in production).
 3. Updates: put [`deploy.sh`](deploy.sh) next to the compose file and run `sudo ./deploy.sh`
    (pulls the image, restarts, waits for health, copies the latest app release to `APP_DIR`).
 
@@ -36,7 +35,9 @@ npm install
 npx playwright install chromium   # fallback if Chrome is missing
 npm start                         # listens on :8080
 ```
-Env vars: `PORT` (8080), `PROXY` (socks5://host:port), `TOKEN` (access key, empty = none),
+Env vars: `PORT` (8080), `PROXY` (local runs only, default socks5://host:port because
+Facebook is blocked on the dev machine; ignored with `NODE_ENV=production`, i.e. in Docker),
+`TOKEN` (access key, empty = none),
 `HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (30), `CHANNEL` (chrome; empty = bundled Chromium),
 `YTDLP` (yt-dlp), `DATA_DIR` (`server/data`; `/data` in Docker).
 
@@ -53,7 +54,7 @@ hides "Mở ứng dụng" / "Open app" buttons, and implements D-pad focus navig
 Video: pressing a video (tap or 5 on a focused video) does not touch the page; the server answers
 `X-Video-Offer: x,y,w,h` and the phone draws a play button over it. That button sends `op=video`,
 which takes the MP4 from the player's `data-video-url` (or a `/videos/`, `/reel/`, `watch?v=` link),
-downloads it with yt-dlp through the proxy into `<DATA_DIR>/video/` (kept 24h). As soon as the MP4
+downloads it with yt-dlp (through the proxy when running locally) into `<DATA_DIR>/video/` (kept 24h). As soon as the MP4
 header (`moov`, at the front of Facebook's progressive files) plus 128 KB have arrived, `/vs` says
 `ready <w> <h>` and `/v/<k>.mp4` streams the growing file (HTTP/1.0, no length), so playback starts
 during the download; once complete it is served with Range support. The phone fits the video to the

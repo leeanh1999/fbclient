@@ -22,9 +22,6 @@ services:
 
     environment:
       - TZ=Asia/Ho_Chi_Minh
-      # SOCKS5 proxy used to reach Facebook. 100.x is a Tailscale address:
-      # the NAS must be on the same tailnet (Tailscale package for DSM).
-      - PROXY=socks5://host:port
       # Access key; set it if the port is reachable from outside the LAN, and
       # enter the same value in the app (Menu > Settings > Access key).
       # - TOKEN=change-me

@@ -6,6 +6,7 @@ ARG BUILD_VERSION=dev
 
 # CHANNEL empty: use Playwright's Chromium directly. Google Chrome has no
 # ARM build, and trying it first on every browser launch only costs time.
+# NODE_ENV=production also means no proxy: the NAS reaches Facebook directly.
 ENV NODE_ENV=production \
     PORT=8080 \
     DATA_DIR=/data \
