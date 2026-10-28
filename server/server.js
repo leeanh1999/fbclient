@@ -49,6 +49,158 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Injected into every page (addInitScript): blocks inline video playback,
+// hides "open the app" buttons and provides D-pad focus navigation
+// (window.__fbc, used by op=move / op=activate / click).
+function pageHelpers() {
+  if (window.__fbc) return;
+
+  // Videos play in the phone's native player, never inside the page.
+  document.addEventListener('play', (e) => {
+    if (e.target && e.target.tagName === 'VIDEO') e.target.pause();
+  }, true);
+
+  const APP_LABEL = /^(mở ứng dụng|tải ứng dụng|dùng ứng dụng|open app|get app|get the app|use app|use the app)$/i;
+  const hideAppButtons = () => {
+    for (const el of document.querySelectorAll('a, button, [role="button"]')) {
+      const text = (el.textContent || '').trim().normalize('NFC');
+      if (!APP_LABEL.test(text)) continue;
+      // Hide the largest wrapper that holds nothing but this button.
+      let n = el;
+      while (n.parentElement && n.parentElement !== document.body &&
+        (n.parentElement.textContent || '').trim().normalize('NFC') === text) {
+        n = n.parentElement;
+      }
+      n.style.setProperty('display', 'none', 'important');
+    }
+  };
+  setInterval(hideAppButtons, 700);
+  document.addEventListener('DOMContentLoaded', hideAppButtons);
+
+  // ---- D-pad focus ----
+  const SEL = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], ' +
+    '[role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="switch"], ' +
+    '[contenteditable="true"], video';
+  let cur = null;
+  let saved = null;
+
+  const mark = (el) => {
+    if (cur) {
+      cur.style.removeProperty('outline');
+      cur.style.removeProperty('outline-offset');
+      if (saved) {
+        cur.style.outline = saved[0];
+        cur.style.outlineOffset = saved[1];
+      }
+    }
+    cur = el;
+    saved = el ? [el.style.outline, el.style.outlineOffset] : null;
+    if (el) {
+      // Drawn inside the element so overflow:hidden parents can't clip it.
+      el.style.setProperty('outline', '3px solid #1877F2', 'important');
+      el.style.setProperty('outline-offset', '-3px', 'important');
+    }
+  };
+
+  const candidates = () => {
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const out = [];
+    for (const el of document.querySelectorAll(SEL)) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 6 || r.height < 6 || r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
+      if (el.tagName !== 'VIDEO') {
+        if (r.width * r.height > vw * vh * 0.5) continue; // page-sized wrappers
+        if (el.querySelector(SEL)) continue; // focus the inner control instead
+      }
+      out.push({ el, r });
+    }
+    return out;
+  };
+
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  };
+
+  // Spatial navigation: nearest element in direction d (u/d/l/r). With no
+  // current focus, start at the first element inside the phone's view
+  // (top..bottom, viewport CSS px).
+  const move = (d, top, bottom) => {
+    const list = candidates();
+    let c = cur && cur.isConnected ? cur.getBoundingClientRect() : null;
+    if (c && c.width === 0) c = null;
+    let best = null;
+    let bestScore = Infinity;
+    for (const it of list) {
+      const r = it.r;
+      let score;
+      if (!c) {
+        if (r.top < top - 1 || r.top > bottom) continue;
+        score = r.top * 4 + r.left;
+      } else {
+        if (it.el === cur || it.el.contains(cur) || cur.contains(it.el)) continue;
+        const cx = (c.left + c.right) / 2;
+        const cy = (c.top + c.bottom) / 2;
+        const rx = (r.left + r.right) / 2;
+        const ry = (r.top + r.bottom) / 2;
+        const offX = Math.max(0, r.left - c.right, c.left - r.right);
+        const offY = Math.max(0, r.top - c.bottom, c.top - r.bottom);
+        if (d === 'd') {
+          if (ry <= cy + 1 || r.bottom <= c.bottom) continue;
+          score = Math.max(0, r.top - c.bottom) + offX * 2 + Math.abs(rx - cx) * 0.05;
+        } else if (d === 'u') {
+          if (ry >= cy - 1 || r.top >= c.top) continue;
+          score = Math.max(0, c.top - r.bottom) + offX * 2 + Math.abs(rx - cx) * 0.05;
+        } else if (d === 'r') {
+          if (rx <= cx + 1 || r.right <= c.right) continue;
+          score = Math.max(0, r.left - c.right) + offY * 3;
+        } else {
+          if (rx >= cx - 1 || r.left >= c.left) continue;
+          score = Math.max(0, c.left - r.right) + offY * 3;
+        }
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = it.el;
+      }
+    }
+    if (!best) return null;
+    mark(best);
+    return rectOf(best);
+  };
+
+  // What 5/FIRE should press: centre of the focused element.
+  const target = () => {
+    if (!cur || !cur.isConnected) return null;
+    const r = cur.getBoundingClientRect();
+    if (r.width === 0) return null;
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
+  // Desktop view: let the browser scroll inner panes to the focus.
+  const reveal = () => {
+    if (cur && cur.isConnected) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+
+  // A tap at (x, y) that lands on a video (or a feed video's player wrapper,
+  // [data-video-id], which m.facebook.com shows until the video is active)
+  // rather than on a control drawn over it (like/share on reels): its rect.
+  const videoAt = (x, y) => {
+    for (const v of document.querySelectorAll('video, [data-video-id]')) {
+      const r = v.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40 || x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+      const hit = document.elementFromPoint(x, y);
+      const ctl = hit && hit.closest('a[href], button, [role="button"], input, textarea');
+      if (ctl && !ctl.contains(v)) return null;
+      return rectOf(v);
+    }
+    return null;
+  };
+
+  window.__fbc = { move, target, reveal, videoAt, clear: () => mark(null) };
+}
+
 function wantMode(url) {
   return DESKTOP_URL.test(url) ? 'desk' : 'mob';
 }
@@ -78,7 +230,7 @@ async function launchView(s, mode) {
     hasTouch: false,
     userAgent: desk ? UA_DESKTOP : UA_MOBILE,
     locale: 'vi-VN',
-    args: ['--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', '--deny-permission-prompts'],
+    args: ['--disable-dev-shm-usage', '--deny-permission-prompts'],
   };
   if (CHANNEL) opts.channel = CHANNEL;
   // Persistent profiles keep cookies and IndexedDB (Messenger E2EE keys).
@@ -92,6 +244,7 @@ async function launchView(s, mode) {
     delete opts.channel;
     ctx = await chromium.launchPersistentContext(dir, opts);
   }
+  await ctx.addInitScript(pageHelpers);
   const page = ctx.pages()[0] || await ctx.newPage();
   // oy: CSS offset of the phone's view inside the (taller) viewport.
   const view = { mode, ctx, page, scale, margin, oy: 0, lastUrl: '' };
@@ -267,9 +420,31 @@ async function runAction(s, q) {
   const out = {};
   switch (op) {
     case 'click':
+      // A tap on a video doesn't touch the page: the phone shows its own
+      // play button instead (force=1 taps anyway).
+      out.offer = q.get('force') ? null : await videoOffer(v, x, y);
+      if (out.offer) break;
+      await page.evaluate(() => window.__fbc && window.__fbc.clear()).catch(() => {});
       await page.mouse.click(x, y);
       s.clickAt = Date.now();
       await settle(page, 500);
+      break;
+    case 'move':
+      await moveFocus(v, q.get('d') || 'd');
+      break;
+    case 'activate': {
+      // 5/FIRE: press the focused element (or offer its video).
+      const t = await page.evaluate(() => (window.__fbc ? window.__fbc.target() : null)).catch(() => null);
+      if (!t) break;
+      out.offer = await videoOffer(v, t.x, t.y);
+      if (out.offer) break;
+      await page.mouse.click(t.x, t.y);
+      s.clickAt = Date.now();
+      await settle(page, 500);
+      break;
+    }
+    case 'nextvideo':
+      out.video = await nextVideo(s);
       break;
     case 'scroll': {
       const dx = parseInt(q.get('dx') || '0', 10) / v.scale;
@@ -339,51 +514,112 @@ async function runAction(s, q) {
   // At most one view switch per request to avoid ping-pong redirects.
   if (s.pendingSwitch) await switchMode(s, s.pendingSwitch);
   syncView(active(s));
-  await autoplayVideos(active(s));
   // Keep the live stream on whichever view is now active.
   if (s.live) await attachCast(s);
   return out;
 }
 
-// Facebook videos often wait behind their own play button. Start any paused
-// video that is at least half inside the phone's view; each video only once,
-// so one the user paused stays paused.
-async function autoplayVideos(v) {
+// ---- D-pad focus and video offers ----
+
+// Height of the phone's view in viewport CSS px.
+function viewHeightCss(v) {
   const vp = v.page.viewportSize();
-  if (!vp) return;
+  return vp ? vp.height - 2 * v.margin : 0;
+}
+
+// Scroll the phone's view by dy CSS px (overscan buffer on the mobile view,
+// mouse wheel on the desktop view).
+async function scrollBy(v, dy) {
+  if (v.margin > 0 && await scrollView(v, dy)) return;
+  const vp = v.page.viewportSize();
+  await v.page.mouse.move(vp.width / 2, v.oy + viewHeightCss(v) / 2);
+  await v.page.mouse.wheel(0, dy);
+  await sleep(250);
+}
+
+async function moveFocus(v, d) {
+  const hView = viewHeightCss(v);
+  const tryMove = () => v.page.evaluate(([dd, t, b]) => (window.__fbc ? window.__fbc.move(dd, t, b) : null),
+    [d, v.oy, v.oy + hView]).catch(() => null);
+  let r = await tryMove();
+  if (!r && (d === 'd' || d === 'u')) {
+    // Nothing further that way in the rendered area: scroll, then retry.
+    await scrollBy(v, (d === 'd' ? 1 : -1) * hView * 2 / 3);
+    r = await tryMove();
+  }
+  if (!r) return;
+  if (v.margin === 0) {
+    // Desktop view (Messenger): inner panes scroll, let the browser do it.
+    await v.page.evaluate(() => window.__fbc && window.__fbc.reveal()).catch(() => {});
+    await sleep(150);
+    return;
+  }
+  // Bring the focused element into the phone's view.
+  const pad = 12;
   const top = v.oy;
-  const bottom = v.oy + vp.height - 2 * v.margin;
-  const started = await v.page.evaluate(([t, b]) => {
-    let n = 0;
-    for (const el of document.querySelectorAll('video')) {
-      const r = el.getBoundingClientRect();
-      const visible = Math.min(r.bottom, b) - Math.max(r.top, t);
-      if (r.height < 40 || visible < r.height / 2) continue;
-      if (!el.paused || el.ended || el.dataset.fbcAuto) continue;
-      el.dataset.fbcAuto = '1';
-      // The phone gets no page audio anyway; muted playback is always allowed.
-      el.muted = true;
-      const p = el.play();
-      if (p && p.catch) p.catch(() => {});
-      n++;
+  const bottom = v.oy + hView;
+  let dy = 0;
+  if (r.y < top + pad) {
+    dy = r.y - top - pad;
+  } else if (r.y + r.h > bottom - pad) {
+    // Taller than the view: align its top instead of its bottom.
+    dy = Math.min(r.y + r.h - bottom + pad, r.y - top - pad);
+  }
+  if (dy) await scrollBy(v, dy);
+}
+
+// Video under (x, y) (viewport CSS px) as a rect in the phone's view, device px.
+async function videoOffer(v, x, y) {
+  const r = await v.page.evaluate(([px, py]) => (window.__fbc ? window.__fbc.videoAt(px, py) : null), [x, y])
+    .catch(() => null);
+  if (!r) return null;
+  const k = v.scale;
+  return [r.x * k, (r.y - v.oy) * k, r.w * k, r.h * k].map(Math.round).join(',');
+}
+
+// "Next" in the phone's video player: the following reel, or the next video
+// further down the page after the one played last.
+async function nextVideo(s) {
+  const v = active(s);
+  const page = v.page;
+  const vp = page.viewportSize();
+  const before = page.url();
+  if (/\/reel\//.test(before)) {
+    await page.mouse.move(vp.width / 2, v.oy + viewHeightCss(v) / 2);
+    await page.mouse.wheel(0, vp.height);
+    await sleep(1500);
+    if (page.url() === before) {
+      await page.keyboard.press('ArrowDown');
+      await sleep(1500);
     }
-    return n;
-  }, [top, bottom]).catch(() => 0);
-  if (!started) return;
-  await sleep(500);
-  // Players whose UI ignored play(): tap the video like the user would.
-  const taps = await v.page.evaluate(() => {
-    const out = [];
-    for (const el of document.querySelectorAll('video[data-fbc-auto="1"]')) {
-      if (!el.paused || el.ended || el.dataset.fbcTapped) continue;
-      el.dataset.fbcTapped = '1';
-      const r = el.getBoundingClientRect();
-      out.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+    if (page.url() === before) return { err: 'No next video' };
+    return startVideo(s, -1, -1);
+  }
+  const after = s.lastVideoDocY == null ? -1 : s.lastVideoDocY;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const next = await page.evaluate((a) => {
+      let best = null;
+      for (const el of document.querySelectorAll('video, [data-video-id]')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue;
+        const docY = r.top + scrollY;
+        if (docY > a + 10 && (!best || docY < best.y)) best = { y: docY, h: r.height };
+      }
+      return best;
+    }, after).catch((e) => log('nextvideo', e.message));
+    log('nextvideo', s.id, 'after y', Math.round(after), '->', next ? Math.round(next.y) : 'none');
+    if (next) {
+      // Scroll it into view, then take it like a tap on it.
+      const sy = await page.evaluate(() => scrollY);
+      await scrollBy(v, next.y - (sy + v.oy) - 20);
+      const sy2 = await page.evaluate(() => scrollY);
+      return startVideo(s, vp.width / 2, next.y - sy2 + Math.min(next.h / 2, viewHeightCss(v) / 2));
     }
-    return out;
-  }).catch(() => []);
-  for (const p of taps) await v.page.mouse.click(p.x, p.y);
-  if (taps.length) await sleep(300);
+    // Feed videos are created as they come near: look further down.
+    await scrollBy(v, viewHeightCss(v));
+    await sleep(800);
+  }
+  return { err: 'No next video' };
 }
 
 // ---- Live view stream ----
@@ -507,11 +743,12 @@ async function scrollView(v, dy) {
 // yt-dlp can download (direct MP4 or a Facebook video permalink).
 async function findVideo(page, x, y) {
   return page.evaluate(([px, py]) => {
-    const vids = Array.from(document.querySelectorAll('video'));
+    const vids = Array.from(document.querySelectorAll('video, [data-video-id]'));
     const vh = window.innerHeight;
     const vw = window.innerWidth;
     let best = null;
     let bestScore = -1;
+    let bestHit = false;
     for (const v of vids) {
       const r = v.getBoundingClientRect();
       const visible = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) *
@@ -522,6 +759,7 @@ async function findVideo(page, x, y) {
       if (score > bestScore) {
         bestScore = score;
         best = v;
+        bestHit = hit;
       }
     }
     const linkRe = /\/(videos|watch|reel|story\.php|video\.php)/;
@@ -534,13 +772,54 @@ async function findVideo(page, x, y) {
         if (a && n !== document.body) link = a.href;
       }
     }
-    const src = best ? (best.currentSrc || best.src || '') : '';
+    // m.facebook.com puts the progressive MP4 and the video id on the player
+    // wrapper (data-video-url / data-video-id); the <video> itself has a blob.
+    let dataUrl = '';
+    for (let n = best, d = 0; n && d < 8 && !dataUrl; n = n.parentElement, d++) {
+      const u = n.getAttribute && n.getAttribute('data-video-url');
+      const id = n.getAttribute && n.getAttribute('data-video-id');
+      if (u && /^https?:/.test(u)) dataUrl = u;
+      if (!link && id && /^\d+$/.test(id)) link = 'https://www.facebook.com/watch/?v=' + id;
+    }
+    let src = best ? (best.currentSrc || best.src || '') : '';
+    if (!/^https?:/.test(src)) src = dataUrl;
     return {
-      src: /^https?:/.test(src) ? src : '',
+      src,
       link,
       page: linkRe.test(location.href) ? location.href : '',
+      hit: bestHit,
+      docY: best ? best.getBoundingClientRect().top + scrollY : null,
     };
   }, [x, y]).catch(() => ({}));
+}
+
+// Width and height of an MP4's video track (tkhd box), or null. The phone
+// uses them to fit the video to the screen with the right aspect ratio.
+function mp4Size(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const chunk = 2 << 20;
+    // moov is usually at the front (progressive), else at the end.
+    for (const pos of [0, Math.max(0, size - chunk)]) {
+      const b = Buffer.alloc(Math.min(chunk, size - pos));
+      fs.readSync(fd, b, 0, b.length, pos);
+      let i = 3;
+      while ((i = b.indexOf('tkhd', i + 1)) > 3) {
+        const end = i - 4 + b.readUInt32BE(i - 4);
+        if (end > b.length || end - i < 80) continue;
+        const w = b.readUInt32BE(end - 8) >>> 16;
+        const h = b.readUInt32BE(end - 4) >>> 16;
+        if (w && h) return [w, h];
+      }
+    }
+  } catch (e) {
+    // unreadable: no size
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return null;
 }
 
 async function writeCookieFile(ctx, file) {
@@ -564,8 +843,11 @@ async function startVideo(s, x, y) {
     await settle(v.page, 1500);
     info = await findVideo(active(s).page, x, y);
   }
-  const url = info.page || info.link || info.src;
+  // A tapped video's own MP4/link beats the page URL (a video page lists
+  // others). The direct MP4 is what Facebook itself plays on mobile.
+  const url = info.hit ? (info.src || info.link || info.page) : (info.page || info.src || info.link);
   if (!url) return { err: 'No video found here' };
+  if (info.docY != null) s.lastVideoDocY = info.docY;
 
   const key = crypto.createHash('md5').update(url.replace(/[?&](_rdr|refsrc|ref)=[^&]*/g, '')).digest('hex').slice(0, 16);
   const file = path.join(VIDEO_DIR, key + '.mp4');
@@ -614,7 +896,11 @@ async function startVideo(s, x, y) {
 }
 
 function videoStatus(key) {
-  if (fs.existsSync(path.join(VIDEO_DIR, key + '.mp4'))) return 'ready';
+  const file = path.join(VIDEO_DIR, key + '.mp4');
+  if (fs.existsSync(file)) {
+    const wh = mp4Size(file);
+    return wh ? `ready ${wh[0]} ${wh[1]}` : 'ready';
+  }
   const j = videoJobs.get(key);
   if (!j) return 'err unknown video';
   if (j.state === 'dl') return 'dl ' + j.pct;
@@ -691,7 +977,8 @@ async function handle(req, res) {
     const opts = { type: fmt, timeout: 15000 };
     if (fmt === 'jpeg') opts.quality = quality;
     const img = await page.screenshot(opts);
-    const input = q.get('op') === 'click' ? await focusedInput(page) : null;
+    const pressed = (q.get('op') === 'click' || q.get('op') === 'activate') && !out.offer;
+    const input = pressed ? await focusedInput(page) : null;
     const v = active(s);
     return { img, input, out, url: page.url(), oy: Math.round(v.oy * v.scale) };
   });
@@ -710,6 +997,8 @@ async function handle(req, res) {
     headers['X-Input'] = input.password ? 'p' : '1';
     headers['X-Value'] = encodeURIComponent(input.value || '');
   }
+  // Tap landed on a video: phone shows a play button over this rect.
+  if (out.offer) headers['X-Video-Offer'] = out.offer;
   if (out.video) {
     if (out.video.key) headers['X-Video'] = out.video.key;
     else headers['X-Video-Err'] = encodeURIComponent(out.video.err);

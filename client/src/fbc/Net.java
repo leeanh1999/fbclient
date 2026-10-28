@@ -211,6 +211,7 @@ class Net implements Runnable {
             String video = hc.getHeaderField("X-Video");
             String videoErr = hc.getHeaderField("X-Video-Err");
             String oy = hc.getHeaderField("X-Oy");
+            String offer = hc.getHeaderField("X-Video-Offer");
 
             boolean changed = false;
             if (code == HttpConnection.HTTP_OK) {
@@ -249,7 +250,21 @@ class Net implements Runnable {
             if (video != null) {
                 app.display.callSerially(new UiTask(app, UiTask.VIDEO, video, false));
             } else if (videoErr != null) {
-                c.toast(urlDecode(videoErr));
+                app.display.callSerially(new UiTask(app, UiTask.VIDEO_ERROR, urlDecode(videoErr), false));
+            }
+            if (offer != null) {
+                // "x,y,w,h" of the pressed video, view coordinates.
+                int[] r = new int[4];
+                int start = 0;
+                for (int i = 0; i < 4; i++) {
+                    int end = offer.indexOf(',', start);
+                    r[i] = FbMidlet.parseInt(offer.substring(start, end < 0 ? offer.length() : end), 0);
+                    start = end + 1;
+                    if (end < 0) {
+                        break;
+                    }
+                }
+                c.showVideoOffer(r[0], r[1], r[2], r[3]);
             }
             return changed;
         } finally {

@@ -29,6 +29,12 @@ final class Icons {
     static final int SETTINGS = 11;
     static final int EXIT = 12;
     static final int CIRCLE = 13; // filled disc, for button backgrounds
+    static final int CLOSE = 14;
+    static final int PLAY = 15;
+    static final int PAUSE = 16;
+    static final int REWIND = 17;
+    static final int FFWD = 18;
+    static final int NEXT = 19;
 
     // cos/sin * 100 for 0, 45, ... 315 degrees (y axis pointing down).
     private static final int[] COS8 = {100, 71, 0, -71, -100, -71, 0, 71};
@@ -198,6 +204,36 @@ final class Icons {
                 break;
             case CIRCLE:
                 g.fillArc(x - h, y - h, s, s, 0, 360);
+                break;
+            case CLOSE: {
+                int a = h * 3 / 4;
+                for (int i = -t / 2; i <= t / 2; i++) {
+                    g.drawLine(x - a + i, y - a, x + a + i, y + a);
+                    g.drawLine(x + a + i, y - a, x - a + i, y + a);
+                    g.drawLine(x - a, y - a + i, x + a, y + a + i);
+                    g.drawLine(x + a, y - a + i, x - a, y + a + i);
+                }
+                break;
+            }
+            case PLAY:
+                // Shifted right a little so it looks centred.
+                g.fillTriangle(x - h / 2, y - h * 4 / 5, x - h / 2, y + h * 4 / 5, x + h * 4 / 5, y);
+                break;
+            case PAUSE:
+                g.fillRect(x - h * 2 / 3, y - h * 3 / 4, h / 2, h * 3 / 2);
+                g.fillRect(x + h / 6, y - h * 3 / 4, h / 2, h * 3 / 2);
+                break;
+            case REWIND:
+                g.fillTriangle(x - h, y, x, y - h * 3 / 4, x, y + h * 3 / 4);
+                g.fillTriangle(x, y, x + h, y - h * 3 / 4, x + h, y + h * 3 / 4);
+                break;
+            case FFWD:
+                g.fillTriangle(x + h, y, x, y - h * 3 / 4, x, y + h * 3 / 4);
+                g.fillTriangle(x, y, x - h, y - h * 3 / 4, x - h, y + h * 3 / 4);
+                break;
+            case NEXT:
+                g.fillTriangle(x - h * 3 / 4, y - h * 3 / 4, x - h * 3 / 4, y + h * 3 / 4, x + h / 3, y);
+                g.fillRect(x + h / 3, y - h * 3 / 4, Math.max(3, t + 1), h * 3 / 2);
                 break;
             default:
                 break;

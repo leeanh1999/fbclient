@@ -8,17 +8,24 @@ import javax.microedition.lcdui.Image;
 /**
  * Full-screen view of the remote page, similar to Cloud Phone.
  *
- * Keys: arrows move cursor (edges scroll), FIRE/5 click, 2/8 scroll page,
- * 4/6 scroll sideways, 1 back, 3 refresh, 7 URL, 9 Enter, 0 type text,
+ * Keys: arrows move the focus between links/buttons (the server highlights
+ * it and scrolls to it), FIRE/5 presses it, 2/8 scroll page, 4/6 scroll
+ * sideways, 1 back, 3 refresh, 7 URL, 9 Enter, 0 type text,
  * left soft/* menu, right soft/# back.
  * Touch: tap click, drag/flick scroll, long-press play video,
  * footer Menu | Home | Back.
+ * Pressing a video shows a play button; that opens the native player.
  */
 class BrowserCanvas extends Canvas implements Runnable {
 
     private static final int TICK_MS = 40;
     private static final int LONG_PRESS_MS = 600;
     private static final int DRAG_SLOP = 12;
+    // Holding an arrow: first repeat after REPEAT_DELAY ticks, then every
+    // REPEAT_EVERY ticks (only when the previous move has been answered).
+    private static final int REPEAT_DELAY = 8;
+    private static final int REPEAT_EVERY = 4;
+    private static final int OFFER_MS = 15000;
 
     private static final int[] FOOTER = {Icons.MENU, Icons.HOME, Icons.BACK};
 
@@ -38,11 +45,15 @@ class BrowserCanvas extends Canvas implements Runnable {
     private int pendingDy, shownDy;
     private static final int LIVE_HOLD_MS = 300;
     private long liveHoldUntil;
-    private int cx, cy;
-    private int dirX, dirY;
+    // D-pad focus: direction held ('u', 'd', 'l', 'r' or 0) and for how long.
+    private char holdDir;
     private int holdTicks;
-    // Cursor is hidden while the user is using the touch screen.
+    // Menu highlight follows keys only while the user is using them.
     private boolean touchMode;
+
+    // Play button over a pressed video (view coordinates), until offerUntil.
+    private int offerX, offerY, offerW, offerH;
+    private long offerUntil;
 
     private String toastMsg;
     private long toastUntil;
@@ -66,16 +77,14 @@ class BrowserCanvas extends Canvas implements Runnable {
         touchMode = touch;
         barH = touch ? Math.max(font.getHeight() + 22, 46) : 0;
         menu = new MenuOverlay(!touch);
-        cx = getWidth() / 2;
-        cy = viewHeight() / 3;
         toast(touch ? "Tap = click, hold = video, drag = scroll"
-                : "* = Menu   # = Back   5 = Click");
+                : "Arrows = move  5 = open  * = Menu");
         // Plain thread instead of an anonymous TimerTask: KEmulator fails to
         // load nested classes.
         new Thread(this).start();
     }
 
-    /** Tick loop: cursor acceleration, long-press, toast expiry. */
+    /** Tick loop: key repeat, long-press, animations, toast expiry. */
     public void run() {
         while (true) {
             try {
@@ -126,6 +135,50 @@ class BrowserCanvas extends Canvas implements Runnable {
         repaint();
     }
 
+    /** The server says the press landed on a video: show a play button. */
+    void showVideoOffer(int x, int y, int w, int h) {
+        offerX = x;
+        offerY = y;
+        offerW = w;
+        offerH = h;
+        offerUntil = System.currentTimeMillis() + OFFER_MS;
+        repaint();
+    }
+
+    private boolean offerShown() {
+        return offerUntil > System.currentTimeMillis();
+    }
+
+    private void clearOffer() {
+        if (offerUntil != 0) {
+            offerUntil = 0;
+            repaint();
+        }
+    }
+
+    // Play button geometry: centred on the visible part of the video.
+    private int offerSize() {
+        return Math.max(48, Math.min(84, Math.min(offerW, offerH) / 2));
+    }
+
+    private int offerCx() {
+        return offerX + offerW / 2;
+    }
+
+    private int offerCy() {
+        int r = offerSize() / 2 + 6;
+        int top = Math.max(offerY, 0);
+        int bottom = Math.min(offerY + offerH, viewHeight());
+        return FbMidlet.clamp((top + bottom) / 2, r, viewHeight() - r);
+    }
+
+    private void playOffer() {
+        int x = offerCx();
+        int y = offerCy();
+        clearOffer();
+        playVideo(x, y);
+    }
+
     void toast(String msg) {
         toastMsg = msg;
         toastUntil = System.currentTimeMillis() + 2500;
@@ -157,6 +210,15 @@ class BrowserCanvas extends Canvas implements Runnable {
             g.drawString("Loading...", w / 2, vh / 2, Graphics.BASELINE | Graphics.HCENTER);
         }
 
+        if (offerShown()) {
+            int d = offerSize();
+            int cx = offerCx();
+            int cy = offerCy();
+            Icons.drawSmooth(g, Icons.CIRCLE, cx, cy, d + 6, 0xFFFFFF, 0xFFFFFF);
+            Icons.drawSmooth(g, Icons.CIRCLE, cx, cy, d, 0x1877F2, 0x1877F2);
+            Icons.drawSmooth(g, Icons.PLAY, cx, cy, d * 9 / 20, 0xFFFFFF, 0x1877F2);
+        }
+
         if (app.net != null && app.net.userBusy) {
             // Busy indicator, top-right corner.
             int phase = (int) ((System.currentTimeMillis() / 150) % 3);
@@ -180,9 +242,6 @@ class BrowserCanvas extends Canvas implements Runnable {
             }
         }
 
-        if (!touchMode && !menu.open) {
-            drawCursor(g, cx, cy);
-        }
         if (menu.open) {
             menu.paint(g, w, vh, font, app.live, !touchMode,
                     app.net == null ? "" : app.net.currentUrl);
@@ -224,31 +283,16 @@ class BrowserCanvas extends Canvas implements Runnable {
         g.drawString(msg, w / 2, y + 3, Graphics.TOP | Graphics.HCENTER);
     }
 
-    private static void drawCursor(Graphics g, int x, int y) {
-        // Arrow pointer: white fill with black outline.
-        g.setColor(0xFFFFFF);
-        g.fillTriangle(x, y, x, y + 14, x + 10, y + 10);
-        g.fillRect(x + 4, y + 10, 3, 6);
-        g.setColor(0x000000);
-        g.drawLine(x, y, x, y + 14);
-        g.drawLine(x, y, x + 10, y + 10);
-        g.drawLine(x, y + 14, x + 4, y + 11);
-        g.drawLine(x + 10, y + 10, x + 6, y + 10);
-        g.drawLine(x + 4, y + 11, x + 6, y + 16);
-        g.drawLine(x + 6, y + 10, x + 8, y + 15);
-        g.drawLine(x + 6, y + 16, x + 8, y + 15);
-    }
-
     // ---- Tick ----
 
     private void tick() {
         boolean dirty = false;
         long now = System.currentTimeMillis();
-        if (dirX != 0 || dirY != 0) {
+        if (holdDir != 0) {
             holdTicks++;
-            int step = Math.min(2 + holdTicks / 3, 14);
-            moveCursor(dirX * step, dirY * step);
-            dirty = true;
+            if (holdTicks >= REPEAT_DELAY && holdTicks % REPEAT_EVERY == 0 && app.net.idle()) {
+                move(holdDir);
+            }
         }
         if (menu.tick()) {
             dirty = true;
@@ -263,6 +307,10 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
         if (tapUntil > 0 && now > tapUntil) {
             tapUntil = 0;
+            dirty = true;
+        }
+        if (offerUntil != 0 && now > offerUntil) {
+            offerUntil = 0;
             dirty = true;
         }
         if (app.net != null && app.net.userBusy) {
@@ -288,28 +336,12 @@ class BrowserCanvas extends Canvas implements Runnable {
 
     // ---- Actions ----
 
-    private void moveCursor(int dx, int dy) {
-        int w = getWidth();
-        int h = viewHeight();
-        int nx = cx + dx;
-        int ny = cy + dy;
-        // Pushing against an edge scrolls the page.
-        if (app.net != null && app.net.idle()) {
-            if (ny < 0) {
-                scroll(cx, cy, 0, -h / 3);
-            } else if (ny > h - 1) {
-                scroll(cx, cy, 0, h / 3);
-            } else if (nx < 0) {
-                scroll(cx, cy, -w / 3, 0);
-            } else if (nx > w - 1) {
-                scroll(cx, cy, w / 3, 0);
-            }
-        }
-        cx = FbMidlet.clamp(nx, 0, w - 1);
-        cy = FbMidlet.clamp(ny, 0, h - 1);
+    private void move(char d) {
+        app.net.action("op=move&d=" + d);
     }
 
     private void scroll(int x, int y, int dx, int dy) {
+        clearOffer();
         synchronized (this) {
             // Show the scroll immediately from the overscan buffer.
             pendingDy += dy;
@@ -339,13 +371,15 @@ class BrowserCanvas extends Canvas implements Runnable {
             return;
         }
         closeMenu();
+        clearOffer();
         app.net.action(i == 1 ? "op=home" : "op=back");
     }
 
     // ---- Menu ----
 
     void openMenu() {
-        dirX = dirY = 0;
+        holdDir = 0;
+        clearOffer();
         menu.show(viewHeight());
         repaint();
     }
@@ -365,12 +399,7 @@ class BrowserCanvas extends Canvas implements Runnable {
             closeMenu();
             return;
         }
-        int ga = 0;
-        try {
-            ga = getGameAction(k);
-        } catch (Exception e) {
-            // Unknown key code on this device.
-        }
+        int ga = gameAction(k);
         if (k == KEY_NUM5 || ga == FIRE) {
             menuActivate(menu.selectedAction());
             return;
@@ -396,10 +425,28 @@ class BrowserCanvas extends Canvas implements Runnable {
         return k == -7 || k == -22 || k == 22 || k == 57346;
     }
 
+    private int gameAction(int k) {
+        try {
+            return getGameAction(k);
+        } catch (Exception e) {
+            return 0; // unknown key code on this device
+        }
+    }
+
     protected void keyPressed(int k) {
         if (menu.open) {
             menuKey(k);
             return;
+        }
+        touchMode = false;
+        int ga = gameAction(k);
+        boolean fire = k == KEY_NUM5 || (ga == FIRE && (k < KEY_NUM0 || k > KEY_NUM9));
+        if (offerShown()) {
+            if (fire) {
+                playOffer();
+                return;
+            }
+            clearOffer();
         }
         if (isLeftSoft(k) || k == KEY_STAR) {
             openMenu();
@@ -412,55 +459,46 @@ class BrowserCanvas extends Canvas implements Runnable {
         int h = viewHeight();
         int w = getWidth();
         switch (k) {
-            case KEY_NUM2: scroll(cx, cy, 0, -h * 3 / 4); return;
-            case KEY_NUM8: scroll(cx, cy, 0, h * 3 / 4); return;
-            case KEY_NUM4: scroll(cx, cy, -w / 2, 0); return;
-            case KEY_NUM6: scroll(cx, cy, w / 2, 0); return;
-            case KEY_NUM5: click(cx, cy); return;
+            case KEY_NUM2: scroll(w / 2, h / 2, 0, -h * 3 / 4); return;
+            case KEY_NUM8: scroll(w / 2, h / 2, 0, h * 3 / 4); return;
+            case KEY_NUM4: scroll(w / 2, h / 2, -w / 2, 0); return;
+            case KEY_NUM6: scroll(w / 2, h / 2, w / 2, 0); return;
             case KEY_NUM3: app.net.resetHash(); app.net.refresh(); return;
             case KEY_NUM7: app.showUrlInput(); return;
             case KEY_NUM9: app.net.action("op=key&k=Enter"); return;
             case KEY_NUM0: app.showTextInput("", false); return;
             default: break;
         }
-        int ga = 0;
-        try {
-            ga = getGameAction(k);
-        } catch (Exception e) {
-            // Unknown key code on this device.
+        if (fire) {
+            app.net.action("op=activate");
+            return;
         }
+        char d = 0;
         switch (ga) {
-            case UP: startMove(0, -1); break;
-            case DOWN: startMove(0, 1); break;
-            case LEFT: startMove(-1, 0); break;
-            case RIGHT: startMove(1, 0); break;
-            case FIRE: click(cx, cy); break;
+            case UP: d = 'u'; break;
+            case DOWN: d = 'd'; break;
+            case LEFT: d = 'l'; break;
+            case RIGHT: d = 'r'; break;
             default: break;
         }
-    }
-
-    private void startMove(int x, int y) {
-        touchMode = false;
-        dirX = x;
-        dirY = y;
-        holdTicks = 0;
-        moveCursor(x * 3, y * 3);
-        repaint();
+        if (d != 0) {
+            holdDir = d;
+            holdTicks = 0;
+            move(d);
+        }
     }
 
     protected void keyReleased(int k) {
-        dirX = dirY = 0;
+        holdDir = 0;
     }
 
     protected void hideNotify() {
-        dirX = dirY = 0;
+        holdDir = 0;
         pressed = false;
         barPress = -1;
     }
 
     protected void sizeChanged(int w, int h) {
-        cx = FbMidlet.clamp(cx, 0, w - 1);
-        cy = FbMidlet.clamp(cy, 0, h - barH - 1);
         if (app.net != null) {
             app.net.resetHash();
             app.net.refresh();
@@ -491,6 +529,7 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
         if (!dragging && (Math.abs(x - px0) > DRAG_SLOP || Math.abs(y - py0) > DRAG_SLOP)) {
             dragging = true;
+            clearOffer();
         }
         if (dragging) {
             long now = System.currentTimeMillis();
@@ -555,9 +594,15 @@ class BrowserCanvas extends Canvas implements Runnable {
             // Flick: keep going in the drag direction if released fast.
             int flick = System.currentTimeMillis() - lastT < 120 ? -velY * 4 : 0;
             commitDrag(x, y, flick);
+        } else if (offerShown()) {
+            int r = offerSize() / 2 + 10;
+            if (Math.abs(x - offerCx()) <= r && Math.abs(y - offerCy()) <= r) {
+                playOffer();
+            } else {
+                clearOffer();
+                click(x, y);
+            }
         } else {
-            cx = x;
-            cy = y;
             click(x, y);
         }
         repaint();

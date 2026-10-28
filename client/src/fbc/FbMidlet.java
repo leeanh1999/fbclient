@@ -145,7 +145,25 @@ public class FbMidlet extends MIDlet implements CommandListener {
     }
 
     void openVideo(String videoKey) {
+        Displayable d = display.getCurrent();
+        if (d instanceof VideoView) {
+            ((VideoView) d).dispose(); // "Next": free the previous player first
+        }
         display.setCurrent(new VideoView(this, videoKey));
+    }
+
+    /** "Next" in the player: the server finds the following video. */
+    void nextVideo() {
+        net.action("op=nextvideo");
+    }
+
+    void videoError(String msg) {
+        Displayable d = display.getCurrent();
+        if (d instanceof VideoView) {
+            ((VideoView) d).showError(msg);
+        } else {
+            canvas.toast(msg);
+        }
     }
 
     /** Access key as a query parameter, prefixed by sep ("&" or "?"). */

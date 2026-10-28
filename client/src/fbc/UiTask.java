@@ -9,6 +9,7 @@ class UiTask implements Runnable {
 
     static final int INPUT = 0;
     static final int VIDEO = 1;
+    static final int VIDEO_ERROR = 2;
 
     private final FbMidlet app;
     private final int kind;
@@ -25,8 +26,10 @@ class UiTask implements Runnable {
     public void run() {
         if (kind == INPUT) {
             app.showTextInput(value, flag);
-        } else {
+        } else if (kind == VIDEO) {
             app.openVideo(value);
+        } else {
+            app.videoError(value);
         }
     }
 }

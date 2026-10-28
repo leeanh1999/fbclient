@@ -45,8 +45,15 @@ Each phone gets two persistent Chrome profiles in `<DATA_DIR>/profiles/<clientId
   for 8 s after a tap). Cookies are copied
   between them; IndexedDB persists so the Messenger E2EE PIN is asked only once.
 
-Video: `op=video` finds the video under (x,y) (or the most visible one), downloads it with yt-dlp
-through the proxy into `server/data/video/` (kept 24h), then the phone plays it natively.
+Every page gets an init script (`pageHelpers` in `server.js`) that blocks inline video playback,
+hides "Mở ứng dụng" / "Open app" buttons, and implements D-pad focus navigation (`window.__fbc`).
+
+Video: pressing a video (tap or 5 on a focused video) does not touch the page; the server answers
+`X-Video-Offer: x,y,w,h` and the phone draws a play button over it. That button sends `op=video`,
+which takes the MP4 from the player's `data-video-url` (or a `/videos/`, `/reel/`, `watch?v=` link),
+downloads it with yt-dlp through the proxy into `<DATA_DIR>/video/` (kept 24h); the phone plays it
+natively, fitted to the screen with the size from `/vs` (`ready <w> <h>`, read from the MP4).
+`op=nextvideo` (player's Next) moves to the next reel or the next video further down the feed.
 
 API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
 | op | params | action |
@@ -57,8 +64,11 @@ API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
 | type | t | replace focused field's text |
 | key | k | press key (Enter, Backspace…) |
 | nav | u | open URL |
+| move | d=u/d/l/r | move the D-pad focus (highlight drawn in the page, scrolls to it) |
+| activate | | press the focused element (or `X-Video-Offer` if it is a video) |
 | back / fwd / reload / home | | |
 | video | x,y (optional) | start video download; returns `X-Video: <k>` or `X-Video-Err` |
+| nextvideo | | next reel / next video in the feed, as `video` |
 
 Responses: `200` image, `204` unchanged (same `hash`); headers `X-Url`, `X-Hash`, `X-Oy`.
 
@@ -107,12 +117,13 @@ Play video, Live, Forward, Reload, Settings, Exit (+ Home on keypad-only phones)
 
 Saved across restarts (RMS): access key, zoom, image format, JPEG quality, Live view.
 
-Video player: tap/5 = pause, 4/6 = −/+10 s, 2/8 = volume, # / right soft = close.
+Video player (icon bar): Close · −10 s · Play/Pause · +10 s · Next. Keys: 5 = pause, 4/6 = −/+10 s,
+2/8 = volume, 9 = next video, # / soft keys = close.
 
 | Key | Action |
 |---|---|
-| Arrows | move cursor (hold = accelerate, push at edge = scroll) |
-| 5 / FIRE | click (tapping a text field opens the input box) |
+| Arrows | move focus to the next link/button/field/video (hold = repeat; scrolls as needed) |
+| 5 / FIRE | press the focused element (a text field opens the input box, a video shows a play button) |
 | 2 / 8 | scroll up / down |
 | 4 / 6 | scroll left / right |
 | 1, # / right soft | back |

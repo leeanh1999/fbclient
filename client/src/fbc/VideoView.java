@@ -11,15 +11,27 @@ import javax.microedition.media.control.VolumeControl;
 
 /**
  * Native video playback (MMAPI). The server downloads the Facebook video as
- * MP4; this screen waits for it, then streams it over HTTP with sound.
+ * MP4; this screen waits for it, then streams it over HTTP with sound,
+ * scaled to fit the screen with its own aspect ratio.
  *
- * Keys: 5/FIRE pause, 4/6 or left/right seek 10 s, up/down volume,
- * #/right soft/1 close. Touch: bottom bar Close | Pause | -10 | +10.
+ * Keys: 5/FIRE pause, 4/6 or left/right seek 10 s, 2/8 or up/down volume,
+ * 9 next video, #/1/soft keys close.
+ * Touch: tap video = pause; bar Close | -10s | Play/Pause | +10s | Next.
  */
 class VideoView extends Canvas implements Runnable, PlayerListener {
 
-    private static final String[] TOOLS = {"Close", "Pause", "-10s", "+10s"};
+    private static final int B_CLOSE = 0;
+    private static final int B_REWIND = 1;
+    private static final int B_PLAY = 2;
+    private static final int B_FFWD = 3;
+    private static final int B_NEXT = 4;
+    private static final int BUTTONS = 5;
     private static final long SEEK_US = 10000000L;
+
+    private static final int C_BAR = 0x18191A;
+    private static final int C_ICON = 0xE4E6EB;
+    private static final int C_PRESS = 0x3A3B3C;
+    private static final int C_BLUE = 0x1877F2;
 
     private final FbMidlet app;
     private final String videoKey;
@@ -32,12 +44,15 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     private VolumeControl volume;
     private boolean paused;
     private boolean ended;
+    // Video size reported by the server (from the MP4), 0 if unknown.
+    private int srcW, srcH;
+    private int pressedButton = -1;
 
     VideoView(FbMidlet app, String videoKey) {
         this.app = app;
         this.videoKey = videoKey;
         setFullScreenMode(true);
-        barH = Math.max(font.getHeight() + 18, 40);
+        barH = Math.max(font.getHeight() + 26, 52);
         new Thread(this).start();
     }
 
@@ -48,6 +63,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             while (!closed) {
                 String st = Net.fetchText(statusUrl).trim();
                 if (st.startsWith("ready")) {
+                    readSize(st);
                     break;
                 }
                 if (st.startsWith("err")) {
@@ -62,21 +78,25 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             }
             setStatus("Starting player...");
             String url = base + "/v/" + videoKey + ".mp4" + app.keyParam("?");
-            player = Manager.createPlayer(url);
-            player.addPlayerListener(this);
-            player.realize();
-            VideoControl vc = (VideoControl) player.getControl("VideoControl");
+            Player p = Manager.createPlayer(url);
+            player = p;
+            p.addPlayerListener(this);
+            p.realize();
+            VideoControl vc = (VideoControl) p.getControl("VideoControl");
             if (vc != null) {
                 vc.initDisplayMode(VideoControl.USE_DIRECT_VIDEO, this);
                 fit(vc);
                 vc.setVisible(true);
             }
-            volume = (VolumeControl) player.getControl("VolumeControl");
-            player.prefetch();
+            volume = (VolumeControl) p.getControl("VolumeControl");
+            p.prefetch();
+            if (vc != null) {
+                fit(vc); // some phones only know the source size now
+            }
             if (closed) {
                 return;
             }
-            player.start();
+            p.start();
             setStatus(null);
             // Keep the progress bar moving.
             while (!closed) {
@@ -84,7 +104,19 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
                 Thread.sleep(500);
             }
         } catch (Throwable t) {
-            setStatus("Player error: " + t.toString());
+            if (!closed) {
+                setStatus("Player error: " + t.toString());
+            }
+        }
+    }
+
+    /** "ready <w> <h>" from the server. */
+    private void readSize(String st) {
+        int a = st.indexOf(' ');
+        int b = a < 0 ? -1 : st.indexOf(' ', a + 1);
+        if (b > a) {
+            srcW = FbMidlet.parseInt(st.substring(a + 1, b), 0);
+            srcH = FbMidlet.parseInt(st.substring(b + 1), 0);
         }
     }
 
@@ -92,8 +124,12 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     private void fit(VideoControl vc) {
         int aw = getWidth();
         int ah = getHeight() - barH;
-        int sw = vc.getSourceWidth();
-        int sh = vc.getSourceHeight();
+        int sw = srcW;
+        int sh = srcH;
+        if (sw <= 0 || sh <= 0) {
+            sw = vc.getSourceWidth();
+            sh = vc.getSourceHeight();
+        }
         int w = aw;
         int h = ah;
         if (sw > 0 && sh > 0) {
@@ -114,6 +150,11 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     private void setStatus(String s) {
         status = s;
         repaint();
+    }
+
+    /** A video request failed (e.g. no next video). */
+    void showError(String msg) {
+        setStatus(msg);
     }
 
     public void playerUpdate(Player p, String event, Object data) {
@@ -141,7 +182,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         }
 
         int y = h - barH;
-        g.setColor(0x18191A);
+        g.setColor(C_BAR);
         g.fillRect(0, y, w, barH);
         // Progress line on top of the bar.
         Player p = player;
@@ -149,24 +190,51 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             long dur = p.getDuration();
             long pos = p.getMediaTime();
             if (dur > 0 && pos >= 0) {
-                g.setColor(0x3A3B3C);
+                g.setColor(C_PRESS);
                 g.fillRect(0, y, w, 3);
-                g.setColor(0x1877F2);
+                g.setColor(C_BLUE);
                 g.fillRect(0, y, (int) (w * pos / dur), 3);
             }
         }
-        int n = TOOLS.length;
-        for (int i = 0; i < n; i++) {
-            int x0 = i * w / n;
-            int x1 = (i + 1) * w / n;
-            String label = i == 1 ? (ended ? "Replay" : (paused ? "Play" : "Pause")) : TOOLS[i];
-            g.setColor(0xE4E6EB);
-            g.drawString(label, (x0 + x1) / 2, y + (barH - font.getHeight()) / 2,
-                    Graphics.TOP | Graphics.HCENTER);
+        int s1 = Math.min(26, barH / 2);
+        for (int i = 0; i < BUTTONS; i++) {
+            int bx = (2 * i + 1) * w / (2 * BUTTONS);
+            int by = y + 3 + (barH - 3) / 2;
+            boolean main = i == B_PLAY;
+            int back = i == pressedButton ? C_PRESS : C_BAR;
+            if (main) {
+                // Play/Pause stands out as a filled circle.
+                Icons.drawSmooth(g, Icons.CIRCLE, bx, by, barH - 12, C_BLUE, C_BLUE);
+                back = C_BLUE;
+            } else if (i == pressedButton) {
+                Icons.drawSmooth(g, Icons.CIRCLE, bx, by, barH - 12, back, back);
+            }
+            Icons.drawSmooth(g, icon(i), bx, by, main ? s1 * 4 / 5 : s1, main ? 0xFFFFFF : C_ICON, back);
+        }
+    }
+
+    private int icon(int button) {
+        switch (button) {
+            case B_CLOSE: return Icons.CLOSE;
+            case B_REWIND: return Icons.REWIND;
+            case B_PLAY: return paused || ended ? Icons.PLAY : Icons.PAUSE;
+            case B_FFWD: return Icons.FFWD;
+            default: return Icons.NEXT;
         }
     }
 
     // ---- Controls ----
+
+    private void press(int button) {
+        switch (button) {
+            case B_CLOSE: close(); break;
+            case B_REWIND: seek(-SEEK_US); break;
+            case B_PLAY: togglePause(); break;
+            case B_FFWD: seek(SEEK_US); break;
+            case B_NEXT: next(); break;
+            default: break;
+        }
+    }
 
     private void togglePause() {
         Player p = player;
@@ -218,17 +286,36 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         }
     }
 
-    void close() {
+    /** Stop playback and free the player (the screen may stay). */
+    void dispose() {
         closed = true;
-        if (player != null) {
-            player.close();
-            player = null;
+        Player p = player;
+        player = null;
+        if (p != null) {
+            p.close();
         }
+    }
+
+    /** Next video: stay on this screen until the server has found it. */
+    private void next() {
+        dispose();
+        paused = false;
+        ended = false;
+        setStatus("Loading next video...");
+        app.nextVideo();
+    }
+
+    void close() {
+        dispose();
         app.display.setCurrent(app.canvas);
     }
 
+    private static boolean isSoft(int k) {
+        return k == -6 || k == -7 || k == -21 || k == -22 || k == 57345 || k == 57346;
+    }
+
     protected void keyPressed(int k) {
-        if (k == -7 || k == -22 || k == KEY_POUND || k == KEY_NUM1 || k == -6 || k == KEY_STAR) {
+        if (isSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_STAR) {
             close();
             return;
         }
@@ -238,6 +325,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             case KEY_NUM6: seek(SEEK_US); return;
             case KEY_NUM2: changeVolume(10); return;
             case KEY_NUM8: changeVolume(-10); return;
+            case KEY_NUM9: next(); return;
             default: break;
         }
         int ga = 0;
@@ -256,17 +344,23 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         }
     }
 
+    private int buttonAt(int x, int y) {
+        return y < getHeight() - barH ? -1 : x * BUTTONS / getWidth();
+    }
+
+    protected void pointerPressed(int x, int y) {
+        pressedButton = buttonAt(x, y);
+        repaint();
+    }
+
     protected void pointerReleased(int x, int y) {
+        int b = pressedButton;
+        pressedButton = -1;
+        repaint();
         if (y < getHeight() - barH) {
             togglePause();
-            return;
-        }
-        switch (x * TOOLS.length / getWidth()) {
-            case 0: close(); break;
-            case 1: togglePause(); break;
-            case 2: seek(-SEEK_US); break;
-            case 3: seek(SEEK_US); break;
-            default: break;
+        } else if (b >= 0 && b == buttonAt(x, y)) {
+            press(b);
         }
     }
 }
