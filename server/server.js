@@ -18,6 +18,8 @@ const IDLE_MS = parseInt(process.env.IDLE_MIN || '30', 10) * 60000;
 // Chromium does not. Set CHANNEL= (empty) to use bundled Chromium.
 const CHANNEL = process.env.CHANNEL === undefined ? 'chrome' : process.env.CHANNEL;
 const YTDLP = process.env.YTDLP || 'yt-dlp';
+// Extra yt-dlp arguments, space separated (e.g. "--limit-rate 2M").
+const YTDLP_EXTRA_ARGS = (process.env.YTDLP_EXTRA_ARGS || '').split(/\s+/).filter(Boolean);
 // Docker mounts the volume at /data (DATA_DIR); locally it is ./data.
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PROFILE_DIR = path.join(DATA_DIR, 'profiles');
@@ -81,41 +83,34 @@ function pageHelpers() {
   const SEL = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], ' +
     '[role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="switch"], ' +
     '[contenteditable="true"], video';
+  // The highlight is drawn by the phone (X-Focus), not in the page, so a
+  // focus move needs no new screenshot.
   let cur = null;
-  let saved = null;
-
   const mark = (el) => {
-    if (cur) {
-      cur.style.removeProperty('outline');
-      cur.style.removeProperty('outline-offset');
-      if (saved) {
-        cur.style.outline = saved[0];
-        cur.style.outlineOffset = saved[1];
-      }
-    }
     cur = el;
-    saved = el ? [el.style.outline, el.style.outlineOffset] : null;
-    if (el) {
-      // Drawn inside the element so overflow:hidden parents can't clip it.
-      el.style.setProperty('outline', '3px solid #1877F2', 'important');
-      el.style.setProperty('outline-offset', '-3px', 'important');
-    }
   };
 
   const candidates = () => {
     const vw = innerWidth;
     const vh = innerHeight;
-    const out = [];
+    const visible = [];
     for (const el of document.querySelectorAll(SEL)) {
       const r = el.getBoundingClientRect();
       if (r.width < 6 || r.height < 6 || r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
-      if (el.tagName !== 'VIDEO') {
-        if (r.width * r.height > vw * vh * 0.5) continue; // page-sized wrappers
-        if (el.querySelector(SEL)) continue; // focus the inner control instead
-      }
-      out.push({ el, r });
+      if (el.tagName !== 'VIDEO' && r.width * r.height > vw * vh * 0.5) continue; // page-sized wrappers
+      visible.push({ el, r });
     }
-    return out;
+    // Focus the inner control, not a wrapper around it: drop candidates that
+    // contain another visible one (walk up from each instead of searching
+    // every subtree, which is slow on big pages).
+    const set = new Set(visible.map((it) => it.el));
+    const wrappers = new Set();
+    for (const it of visible) {
+      for (let p = it.el.parentElement, d = 0; p && d < 30; p = p.parentElement, d++) {
+        if (set.has(p)) wrappers.add(p);
+      }
+    }
+    return visible.filter((it) => it.el.tagName === 'VIDEO' || !wrappers.has(it.el));
   };
 
   const rectOf = (el) => {
@@ -198,7 +193,14 @@ function pageHelpers() {
     return null;
   };
 
-  window.__fbc = { move, target, reveal, videoAt, clear: () => mark(null) };
+  // Focused element's rect (viewport CSS px), or null.
+  const rect = () => {
+    if (!cur || !cur.isConnected) return null;
+    const r = rectOf(cur);
+    return r.w > 0 && r.h > 0 ? r : null;
+  };
+
+  window.__fbc = { move, target, reveal, videoAt, rect, clear: () => mark(null) };
 }
 
 function wantMode(url) {
@@ -430,7 +432,7 @@ async function runAction(s, q) {
       await settle(page, 500);
       break;
     case 'move':
-      await moveFocus(v, q.get('d') || 'd');
+      out.scrolled = await moveFocus(v, q.get('d') || 'd');
       break;
     case 'activate': {
       // 5/FIRE: press the focused element (or offer its video).
@@ -537,22 +539,26 @@ async function scrollBy(v, dy) {
   await sleep(250);
 }
 
+// Returns true if the page scrolled (the phone then needs a new frame;
+// otherwise only the highlight moved and no screenshot is sent).
 async function moveFocus(v, d) {
   const hView = viewHeightCss(v);
   const tryMove = () => v.page.evaluate(([dd, t, b]) => (window.__fbc ? window.__fbc.move(dd, t, b) : null),
     [d, v.oy, v.oy + hView]).catch(() => null);
+  let scrolled = false;
   let r = await tryMove();
   if (!r && (d === 'd' || d === 'u')) {
     // Nothing further that way in the rendered area: scroll, then retry.
     await scrollBy(v, (d === 'd' ? 1 : -1) * hView * 2 / 3);
+    scrolled = true;
     r = await tryMove();
   }
-  if (!r) return;
+  if (!r) return scrolled;
   if (v.margin === 0) {
     // Desktop view (Messenger): inner panes scroll, let the browser do it.
     await v.page.evaluate(() => window.__fbc && window.__fbc.reveal()).catch(() => {});
-    await sleep(150);
-    return;
+    const after = await v.page.evaluate(() => window.__fbc && window.__fbc.rect()).catch(() => null);
+    return scrolled || !after || Math.abs(after.y - r.y) >= 1;
   }
   // Bring the focused element into the phone's view.
   const pad = 12;
@@ -565,7 +571,11 @@ async function moveFocus(v, d) {
     // Taller than the view: align its top instead of its bottom.
     dy = Math.min(r.y + r.h - bottom + pad, r.y - top - pad);
   }
-  if (dy) await scrollBy(v, dy);
+  if (dy) {
+    await scrollBy(v, dy);
+    scrolled = true;
+  }
+  return scrolled;
 }
 
 // Video under (x, y) (viewport CSS px) as a rect in the phone's view, device px.
@@ -577,47 +587,64 @@ async function videoOffer(v, x, y) {
   return [r.x * k, (r.y - v.oy) * k, r.w * k, r.h * k].map(Math.round).join(',');
 }
 
-// "Next" in the phone's video player: the following reel, or the next video
-// further down the page after the one played last.
+// "Next" in the phone's video player: the first player on the page below the
+// one played last that hasn't been played yet (by data-video-id). Its own MP4
+// URL is downloaded directly, so it needn't be tapped or even on screen.
+// Reel pages swipe to the next reel when the page has no other player.
 async function nextVideo(s) {
   const v = active(s);
   const page = v.page;
   const vp = page.viewportSize();
-  const before = page.url();
-  if (/\/reel\//.test(before)) {
-    await page.mouse.move(vp.width / 2, v.oy + viewHeightCss(v) / 2);
-    await page.mouse.wheel(0, vp.height);
-    await sleep(1500);
-    if (page.url() === before) {
-      await page.keyboard.press('ArrowDown');
-      await sleep(1500);
-    }
-    if (page.url() === before) return { err: 'No next video' };
-    return startVideo(s, -1, -1);
-  }
-  const after = s.lastVideoDocY == null ? -1 : s.lastVideoDocY;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const next = await page.evaluate((a) => {
-      let best = null;
+  const played = s.played || (s.played = new Set());
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const list = await page.evaluate(() => {
+      const out = [];
+      const seen = new Set();
       for (const el of document.querySelectorAll('video, [data-video-id]')) {
         const r = el.getBoundingClientRect();
         if (r.width < 40 || r.height < 40) continue;
-        const docY = r.top + scrollY;
-        if (docY > a + 10 && (!best || docY < best.y)) best = { y: docY, h: r.height };
+        const wrap = el.closest('[data-video-id]') || el.querySelector('[data-video-id]');
+        const id = wrap ? wrap.getAttribute('data-video-id') : '';
+        if (id && seen.has(id)) continue;
+        if (id) seen.add(id);
+        const holder = el.closest('[data-video-url]') || el.querySelector('[data-video-url]');
+        let url = holder ? holder.getAttribute('data-video-url') || '' : '';
+        if (!/^https?:/.test(url)) url = /^\d+$/.test(id) ? 'https://www.facebook.com/watch/?v=' + id : '';
+        out.push({ y: r.top + scrollY, id, url });
       }
-      return best;
-    }, after).catch((e) => log('nextvideo', e.message));
-    log('nextvideo', s.id, 'after y', Math.round(after), '->', next ? Math.round(next.y) : 'none');
+      return out.sort((a, b) => a.y - b.y);
+    }).catch(() => []);
+    const after = s.lastVideoDocY == null ? -Infinity : s.lastVideoDocY;
+    const fresh = list.filter((p) => p.url && !(p.id && played.has(p.id)));
+    // Below the last one; or, for players stacked at the same place (reels),
+    // any unplayed one that isn't above it.
+    const next = fresh.find((p) => p.y > after + 10) || fresh.find((p) => p.id && p.y >= after - 10);
+    log('nextvideo', s.id, 'players', list.length, 'unplayed', fresh.length, '->', next ? next.id || 'url' : 'none');
     if (next) {
-      // Scroll it into view, then take it like a tap on it.
-      const sy = await page.evaluate(() => scrollY);
+      if (next.id) played.add(next.id);
+      s.lastVideoDocY = next.y;
+      // Scroll the page to it too, so closing the player shows where we are.
+      const sy = await page.evaluate(() => scrollY).catch(() => 0);
       await scrollBy(v, next.y - (sy + v.oy) - 20);
-      const sy2 = await page.evaluate(() => scrollY);
-      return startVideo(s, vp.width / 2, next.y - sy2 + Math.min(next.h / 2, viewHeightCss(v) / 2));
+      return downloadVideo(s, next.url);
     }
-    // Feed videos are created as they come near: look further down.
-    await scrollBy(v, viewHeightCss(v));
-    await sleep(800);
+    const before = page.url();
+    if (/\/reel\//.test(before)) {
+      // Swipe to the next reel.
+      await page.mouse.move(vp.width / 2, v.oy + viewHeightCss(v) / 2);
+      await page.mouse.wheel(0, viewHeightCss(v));
+      await sleep(1500);
+      if (page.url() === before) {
+        await page.keyboard.press('ArrowDown');
+        await sleep(1500);
+      }
+      if (page.url() !== before) return startVideo(s, -1, -1);
+    } else {
+      // Feed videos are created as they come near: look further down
+      // (Facebook loads more posts as the page scrolls).
+      await scrollBy(v, viewHeightCss(v) * 2);
+      await sleep(1000);
+    }
   }
   return { err: 'No next video' };
 }
@@ -775,10 +802,12 @@ async function findVideo(page, x, y) {
     // m.facebook.com puts the progressive MP4 and the video id on the player
     // wrapper (data-video-url / data-video-id); the <video> itself has a blob.
     let dataUrl = '';
+    let videoId = '';
     for (let n = best, d = 0; n && d < 8 && !dataUrl; n = n.parentElement, d++) {
       const u = n.getAttribute && n.getAttribute('data-video-url');
       const id = n.getAttribute && n.getAttribute('data-video-id');
       if (u && /^https?:/.test(u)) dataUrl = u;
+      if (id && !videoId) videoId = id;
       if (!link && id && /^\d+$/.test(id)) link = 'https://www.facebook.com/watch/?v=' + id;
     }
     let src = best ? (best.currentSrc || best.src || '') : '';
@@ -788,9 +817,58 @@ async function findVideo(page, x, y) {
       link,
       page: linkRe.test(location.href) ? location.href : '',
       hit: bestHit,
+      id: videoId,
       docY: best ? best.getBoundingClientRect().top + scrollY : null,
     };
   }, [x, y]).catch(() => ({}));
+}
+
+// Top-level boxes of a (possibly still downloading) MP4: where moov ends and
+// the video size, or null if moov isn't complete yet or comes after mdat
+// (then the file can't be played before it is complete).
+function mp4Head(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const hdr = Buffer.alloc(16);
+    let pos = 0;
+    for (let i = 0; i < 32 && pos + 8 <= size; i++) {
+      fs.readSync(fd, hdr, 0, 16, pos);
+      let len = hdr.readUInt32BE(0);
+      const type = hdr.toString('latin1', 4, 8);
+      if (len === 1) len = Number(hdr.readBigUInt64BE(8));
+      if (len === 0) len = size - pos;
+      if (len < 8) return null;
+      if (type === 'mdat') return null;
+      if (type === 'moov') {
+        if (pos + len > size || len > 32 << 20) return null;
+        const moov = Buffer.alloc(len);
+        fs.readSync(fd, moov, 0, len, pos);
+        const wh = tkhdSize(moov);
+        return { size, moovEnd: pos + len, w: wh ? wh[0] : 0, h: wh ? wh[1] : 0 };
+      }
+      pos += len;
+    }
+  } catch (e) {
+    // unreadable / incomplete
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return null;
+}
+
+// First video track size (tkhd box) found in buffer b, or null.
+function tkhdSize(b) {
+  let i = 3;
+  while ((i = b.indexOf('tkhd', i + 1)) > 3) {
+    const end = i - 4 + b.readUInt32BE(i - 4);
+    if (end > b.length || end - i < 80) continue;
+    const w = b.readUInt32BE(end - 8) >>> 16;
+    const h = b.readUInt32BE(end - 4) >>> 16;
+    if (w && h) return [w, h];
+  }
+  return null;
 }
 
 // Width and height of an MP4's video track (tkhd box), or null. The phone
@@ -805,14 +883,8 @@ function mp4Size(file) {
     for (const pos of [0, Math.max(0, size - chunk)]) {
       const b = Buffer.alloc(Math.min(chunk, size - pos));
       fs.readSync(fd, b, 0, b.length, pos);
-      let i = 3;
-      while ((i = b.indexOf('tkhd', i + 1)) > 3) {
-        const end = i - 4 + b.readUInt32BE(i - 4);
-        if (end > b.length || end - i < 80) continue;
-        const w = b.readUInt32BE(end - 8) >>> 16;
-        const h = b.readUInt32BE(end - 4) >>> 16;
-        if (w && h) return [w, h];
-      }
+      const wh = tkhdSize(b);
+      if (wh) return wh;
     }
   } catch (e) {
     // unreadable: no size
@@ -848,32 +920,44 @@ async function startVideo(s, x, y) {
   const url = info.hit ? (info.src || info.link || info.page) : (info.page || info.src || info.link);
   if (!url) return { err: 'No video found here' };
   if (info.docY != null) s.lastVideoDocY = info.docY;
+  if (info.id) (s.played || (s.played = new Set())).add(info.id);
+  return downloadVideo(s, url);
+}
 
+// Starts (or reuses) the yt-dlp download of url. The file is written in
+// place, so the phone can start playing it while it downloads; a ".done"
+// marker is written once it is complete.
+async function downloadVideo(s, url) {
   const key = crypto.createHash('md5').update(url.replace(/[?&](_rdr|refsrc|ref)=[^&]*/g, '')).digest('hex').slice(0, 16);
   const file = path.join(VIDEO_DIR, key + '.mp4');
-  if (fs.existsSync(file)) return { key };
-  if (videoJobs.has(key) && videoJobs.get(key).state !== 'err') return { key };
+  if (fs.existsSync(file + '.done')) return { key };
+  const running = videoJobs.get(key);
+  if (running && running.state !== 'err') return { key };
 
   const job = { state: 'dl', pct: 0, msg: '', url };
   videoJobs.set(key, job);
+  fs.rmSync(file, { force: true }); // leftover of an interrupted download
   const cookies = path.join(VIDEO_DIR, key + '.cookies.txt');
   await writeCookieFile(active(s).ctx, cookies);
-  const tmp = path.join(VIDEO_DIR, key + '.part.mp4');
   // Prefer the progressive SD stream (H.264 + AAC in one file, no ffmpeg needed).
   const args = [
     '--proxy', PROXY, '--cookies', cookies, '--no-playlist', '--newline', '--no-part',
     '-f', 'sd/b[height<=?480][ext=mp4]/b[ext=mp4]/b',
-    '-o', tmp, url,
+    ...YTDLP_EXTRA_ARGS,
+    '-o', file, url,
   ];
   log('video', key, url);
   const p = spawn(YTDLP, args, { windowsHide: true });
   let errText = '';
+  // Keep the tail of both streams: the reason for a failure can be on either.
   p.stdout.on('data', (d) => {
-    const m = /\[download\]\s+([\d.]+)%/.exec(d.toString());
+    const text = d.toString();
+    const m = /\[download\]\s+([\d.]+)%/.exec(text);
     if (m) job.pct = Math.floor(parseFloat(m[1]));
+    errText = (errText + text).slice(-600);
   });
   p.stderr.on('data', (d) => {
-    errText = (errText + d.toString()).slice(-400);
+    errText = (errText + d.toString()).slice(-600);
   });
   p.on('error', (e) => {
     job.state = 'err';
@@ -881,36 +965,96 @@ async function startVideo(s, x, y) {
   });
   p.on('close', (code) => {
     fs.rm(cookies, () => {});
-    if (code === 0 && fs.existsSync(tmp)) {
-      fs.renameSync(tmp, file);
+    if (code === 0 && fs.existsSync(file)) {
+      fs.writeFileSync(file + '.done', '');
       job.state = 'ready';
       job.pct = 100;
       log('video ready', key, fs.statSync(file).size, 'bytes');
     } else {
       job.state = 'err';
-      job.msg = (errText.split('\n').filter((l) => /ERROR/.test(l)).pop() || `yt-dlp exit ${code}`).slice(0, 120);
-      log('video failed', key, job.msg);
+      const lines = errText.split('\n').map((l) => l.trim()).filter(Boolean);
+      job.msg = (lines.filter((l) => /ERROR/.test(l)).pop() || lines.pop() || `yt-dlp exit ${code}`).slice(0, 160);
+      log('video failed', key, `exit ${code}:`, job.msg);
     }
   });
   return { key };
 }
 
+// Bytes after the MP4 header that must be downloaded before playback starts.
+const STREAM_START = 128 * 1024;
+
 function videoStatus(key) {
   const file = path.join(VIDEO_DIR, key + '.mp4');
-  if (fs.existsSync(file)) {
+  if (fs.existsSync(file + '.done')) {
     const wh = mp4Size(file);
     return wh ? `ready ${wh[0]} ${wh[1]}` : 'ready';
   }
   const j = videoJobs.get(key);
   if (!j) return 'err unknown video';
-  if (j.state === 'dl') return 'dl ' + j.pct;
-  return j.state === 'ready' ? 'ready' : 'err ' + j.msg;
+  if (j.state === 'dl') {
+    // Playable while downloading once the header (moov) is complete:
+    // Facebook's progressive MP4s have it at the front.
+    const head = mp4Head(file);
+    if (head && head.size >= head.moovEnd + STREAM_START) {
+      log('video streamable', key, head.size, 'bytes');
+      return head.w ? `ready ${head.w} ${head.h}` : 'ready';
+    }
+    return 'dl ' + j.pct;
+  }
+  return 'err ' + j.msg;
+}
+
+// While the download runs, send the file as it grows: HTTP/1.0 without a
+// length (the body ends when the socket closes), so playback starts right
+// away. Seeking works once the download is complete (Range below).
+function streamGrowingVideo(req, file, job) {
+  const sock = req.socket;
+  sock.setNoDelay(true);
+  sock.write('HTTP/1.0 200 OK\r\nContent-Type: video/mp4\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n');
+  if (req.method === 'HEAD') return sock.end();
+  const fd = fs.openSync(file, 'r');
+  const buf = Buffer.alloc(64 * 1024);
+  let pos = 0;
+  let finished = false;
+  const finish = (endSocket) => {
+    if (finished) return;
+    finished = true;
+    fs.close(fd, () => {});
+    if (endSocket) sock.end();
+  };
+  sock.on('close', () => finish(false));
+  const pump = () => {
+    if (finished) return;
+    let n = 0;
+    try {
+      n = fs.readSync(fd, buf, 0, buf.length, pos);
+    } catch (e) {
+      return finish(true);
+    }
+    if (n > 0) {
+      pos += n;
+      // Copy: buf is reused while the socket may still hold the data.
+      if (sock.write(Buffer.from(buf.subarray(0, n)))) setImmediate(pump);
+      else sock.once('drain', pump);
+    } else if (job.state === 'dl') {
+      setTimeout(pump, 200); // wait for more data
+    } else {
+      finish(true); // download finished (or failed)
+    }
+  };
+  pump();
 }
 
 // Serve a downloaded MP4 with Range support (needed by phone media players).
 function serveVideo(req, res, key) {
   const file = path.join(VIDEO_DIR, key + '.mp4');
   if (!/^[0-9a-f]{16}$/.test(key) || !fs.existsSync(file)) {
+    res.writeHead(404);
+    return res.end();
+  }
+  if (!fs.existsSync(file + '.done')) {
+    const job = videoJobs.get(key);
+    if (job && job.state === 'dl') return streamGrowingVideo(req, file, job);
     res.writeHead(404);
     return res.end();
   }
@@ -973,24 +1117,34 @@ async function handle(req, res) {
   // Serialize actions per session.
   const job = s.chain.then(async () => {
     const out = await runAction(s, q);
-    const page = active(s).page;
-    const opts = { type: fmt, timeout: 15000 };
-    if (fmt === 'jpeg') opts.quality = quality;
-    const img = await page.screenshot(opts);
+    const v = active(s);
+    const page = v.page;
+    // D-pad focus rect in image (tall viewport) device px; the phone draws it.
+    const fr = await page.evaluate(() => (window.__fbc ? window.__fbc.rect() : null)).catch(() => null);
+    const focus = fr ? [fr.x, fr.y, fr.w, fr.h].map((n) => Math.round(n * v.scale)).join(',') : '';
+    // A focus move that didn't scroll changes nothing on screen: skip the
+    // screenshot (the slowest part, especially on a NAS).
+    let img = null;
+    if (q.get('op') !== 'move' || out.scrolled) {
+      const opts = { type: fmt, timeout: 15000 };
+      if (fmt === 'jpeg') opts.quality = quality;
+      img = await page.screenshot(opts);
+    }
     const pressed = (q.get('op') === 'click' || q.get('op') === 'activate') && !out.offer;
     const input = pressed ? await focusedInput(page) : null;
-    const v = active(s);
-    return { img, input, out, url: page.url(), oy: Math.round(v.oy * v.scale) };
+    return { img, input, out, focus, url: page.url(), oy: Math.round(v.oy * v.scale) };
   });
   s.chain = job.catch(() => {});
-  const { img, input, out, url, oy } = await job;
+  const { img, input, out, focus, url, oy } = await job;
 
-  const hash = crypto.createHash('md5').update(img).update(String(oy)).digest('hex').slice(0, 12);
+  const hash = img ? crypto.createHash('md5').update(img).update(String(oy)).digest('hex').slice(0, 12) : lastHash;
   const headers = {
     'X-Url': encodeURIComponent(url),
     'X-Hash': hash,
     // Where the phone's view starts inside the (taller) image, device px.
     'X-Oy': String(oy),
+    // "x,y,w,h" of the D-pad focus in the image, device px ("" = none).
+    'X-Focus': focus,
     'Cache-Control': 'no-store',
   };
   if (input) {
@@ -1003,7 +1157,7 @@ async function handle(req, res) {
     if (out.video.key) headers['X-Video'] = out.video.key;
     else headers['X-Video-Err'] = encodeURIComponent(out.video.err);
   }
-  if (hash === lastHash) {
+  if (!img || hash === lastHash) {
     res.writeHead(204, headers);
     return res.end();
   }

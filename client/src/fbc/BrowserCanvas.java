@@ -51,6 +51,10 @@ class BrowserCanvas extends Canvas implements Runnable {
     // Menu highlight follows keys only while the user is using them.
     private boolean touchMode;
 
+    // D-pad focus rect in image coordinates (x, y, w, h), or null. Drawn here
+    // rather than in the page so moving it needs no new screenshot.
+    private int[] focus;
+
     // Play button over a pressed video (view coordinates), until offerUntil.
     private int offerX, offerY, offerW, offerH;
     private long offerUntil;
@@ -135,6 +139,12 @@ class BrowserCanvas extends Canvas implements Runnable {
         repaint();
     }
 
+    /** Focus rect from the server (image coordinates), null = none. */
+    void setFocus(int[] r) {
+        focus = r;
+        repaint();
+    }
+
     /** The server says the press landed on a video: show a play button. */
     void showVideoOffer(int x, int y, int w, int h) {
         offerX = x;
@@ -204,6 +214,13 @@ class BrowserCanvas extends Canvas implements Runnable {
                 y = vh - ih;
             }
             g.drawImage(image, 0, y, Graphics.TOP | Graphics.LEFT);
+            int[] f = focus;
+            if (f != null) {
+                g.setColor(0x1877F2);
+                for (int i = 0; i < 3; i++) {
+                    g.drawRoundRect(f[0] + i, y + f[1] + i, f[2] - 1 - 2 * i, f[3] - 1 - 2 * i, 10, 10);
+                }
+            }
         } else {
             g.setFont(font);
             g.setColor(0x1877F2);

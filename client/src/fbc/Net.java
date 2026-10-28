@@ -123,7 +123,9 @@ class Net implements Runnable {
                     req = (String) queue.elementAt(0);
                     queue.removeElementAt(0);
                 }
-                if (!poll) {
+                // A focus move changes nothing on the page: no burst of
+                // follow-up frames (each one costs a screenshot on the server).
+                if (!poll && !req.startsWith("op=move")) {
                     pollUntil = System.currentTimeMillis() + BURST_MS;
                     unchanged = 0;
                 }
@@ -212,6 +214,7 @@ class Net implements Runnable {
             String videoErr = hc.getHeaderField("X-Video-Err");
             String oy = hc.getHeaderField("X-Oy");
             String offer = hc.getHeaderField("X-Video-Offer");
+            String focus = hc.getHeaderField("X-Focus");
 
             boolean changed = false;
             if (code == HttpConnection.HTTP_OK) {
@@ -252,24 +255,40 @@ class Net implements Runnable {
             } else if (videoErr != null) {
                 app.display.callSerially(new UiTask(app, UiTask.VIDEO_ERROR, urlDecode(videoErr), false));
             }
+            if (focus != null) {
+                // After the frame, so the highlight matches the new image.
+                c.setFocus(parseRect(focus));
+            }
             if (offer != null) {
-                // "x,y,w,h" of the pressed video, view coordinates.
-                int[] r = new int[4];
-                int start = 0;
-                for (int i = 0; i < 4; i++) {
-                    int end = offer.indexOf(',', start);
-                    r[i] = FbMidlet.parseInt(offer.substring(start, end < 0 ? offer.length() : end), 0);
-                    start = end + 1;
-                    if (end < 0) {
-                        break;
-                    }
+                // Pressed video, view coordinates.
+                int[] r = parseRect(offer);
+                if (r != null) {
+                    c.showVideoOffer(r[0], r[1], r[2], r[3]);
                 }
-                c.showVideoOffer(r[0], r[1], r[2], r[3]);
             }
             return changed;
         } finally {
             close(in, hc);
         }
+    }
+
+    /** "x,y,w,h" -> int[4]; null if empty or malformed. */
+    private static int[] parseRect(String s) {
+        int[] r = new int[4];
+        int start = 0;
+        for (int i = 0; i < 4; i++) {
+            int end = s.indexOf(',', start);
+            if (end < 0 && i < 3) {
+                return null;
+            }
+            try {
+                r[i] = Integer.parseInt(s.substring(start, end < 0 ? s.length() : end).trim());
+            } catch (Exception e) {
+                return null;
+            }
+            start = end + 1;
+        }
+        return r[2] > 0 && r[3] > 0 ? r : null;
     }
 
     /** Simple GET returning the body as UTF-8 text (used for status polls). */

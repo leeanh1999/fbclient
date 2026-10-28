@@ -51,9 +51,13 @@ hides "Mở ứng dụng" / "Open app" buttons, and implements D-pad focus navig
 Video: pressing a video (tap or 5 on a focused video) does not touch the page; the server answers
 `X-Video-Offer: x,y,w,h` and the phone draws a play button over it. That button sends `op=video`,
 which takes the MP4 from the player's `data-video-url` (or a `/videos/`, `/reel/`, `watch?v=` link),
-downloads it with yt-dlp through the proxy into `<DATA_DIR>/video/` (kept 24h); the phone plays it
-natively, fitted to the screen with the size from `/vs` (`ready <w> <h>`, read from the MP4).
-`op=nextvideo` (player's Next) moves to the next reel or the next video further down the feed.
+downloads it with yt-dlp through the proxy into `<DATA_DIR>/video/` (kept 24h). As soon as the MP4
+header (`moov`, at the front of Facebook's progressive files) plus 128 KB have arrived, `/vs` says
+`ready <w> <h>` and `/v/<k>.mp4` streams the growing file (HTTP/1.0, no length), so playback starts
+during the download; once complete it is served with Range support. The phone fits the video to the
+screen with that size. `op=nextvideo` (player's Next) takes the next not-yet-played player on the
+page (`data-video-id`/`data-video-url`), loading more of the feed or swiping reels when needed.
+`YTDLP_EXTRA_ARGS` passes extra yt-dlp options (e.g. `--limit-rate 2M`).
 
 API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
 | op | params | action |
@@ -64,13 +68,14 @@ API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&hash=&key=&op=...`
 | type | t | replace focused field's text |
 | key | k | press key (Enter, Backspace…) |
 | nav | u | open URL |
-| move | d=u/d/l/r | move the D-pad focus (highlight drawn in the page, scrolls to it) |
+| move | d=u/d/l/r | move the D-pad focus; scrolls to it. Without a scroll: `204`, no screenshot |
 | activate | | press the focused element (or `X-Video-Offer` if it is a video) |
 | back / fwd / reload / home | | |
 | video | x,y (optional) | start video download; returns `X-Video: <k>` or `X-Video-Err` |
 | nextvideo | | next reel / next video in the feed, as `video` |
 
-Responses: `200` image, `204` unchanged (same `hash`); headers `X-Url`, `X-Hash`, `X-Oy`.
+Responses: `200` image, `204` unchanged (same `hash`); headers `X-Url`, `X-Hash`, `X-Oy`,
+`X-Focus: x,y,w,h` (D-pad focus in image px, drawn by the phone, so moving it needs no new frame).
 
 Overscan (`ov` = % of view height, client sends 100, or 50 after running out of memory): in the mobile view the viewport is rendered
 `ov`% taller above and below the phone's view; `X-Oy` says where the view starts in the image.
