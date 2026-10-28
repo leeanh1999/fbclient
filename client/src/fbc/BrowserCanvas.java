@@ -208,7 +208,14 @@ class BrowserCanvas extends Canvas implements Runnable {
             // blank space; the next frame brings more content.
             int y = dragY - imgOy - shownDy;
             int ih = image.getHeight();
-            if (y > 0 || ih <= vh) {
+            if (ih <= vh) {
+                // No buffer (Messenger's desktop view): never shift the
+                // frame locally. Only an inner list scrolls there, so moving
+                // the whole image would drag the header and composer along
+                // and uncover blank space; frequent scroll requests while
+                // dragging show the list moving instead.
+                y = 0;
+            } else if (y > 0) {
                 y = 0;
             } else if (y + ih < vh) {
                 y = vh - ih;
@@ -560,8 +567,11 @@ class BrowserCanvas extends Canvas implements Runnable {
             // Instant local feedback: shift the current frame.
             dragY = y - py0;
             // Long drag: send what we have so far, so the server refills
-            // the buffer while the finger is still moving.
-            if (Math.abs(dragY) > viewHeight() / 3 && app.net.idle()) {
+            // the buffer while the finger is still moving. Without a buffer
+            // send much more often, so the content keeps up with the finger.
+            Image img = image;
+            int every = img != null && img.getHeight() <= viewHeight() ? viewHeight() / 8 : viewHeight() / 3;
+            if (Math.abs(dragY) > every && app.net.idle()) {
                 commitDrag(x, y, 0);
                 py0 = y;
             }

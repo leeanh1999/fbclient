@@ -30,10 +30,10 @@ const VIDEO_DIR = path.join(DATA_DIR, 'video');
 const UA_MOBILE = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 // m.facebook.com shows a "get the Messenger app" wall to mobile browsers,
-// so messages are rendered with the desktop site instead.
+// so messages are rendered with the desktop site instead, at the phone's own
+// width: its layout adapts to narrow windows (single column, normal text).
 const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-const DESKTOP_MIN_WIDTH = 900;
 const DESKTOP_URL = /^https?:\/\/([a-z0-9-]+\.)?(facebook\.com\/messages|messenger\.com|m\.me\/)/i;
 const MESSENGER_URL = 'https://www.facebook.com/messages/';
 // The Messenger tab on m.facebook.com opens an in-page "get the app" overlay
@@ -202,7 +202,24 @@ function pageHelpers() {
     return r.w > 0 && r.h > 0 ? r : null;
   };
 
-  window.__fbc = { move, target, reveal, videoAt, rect, clear: () => mark(null) };
+  // Scroll whatever is scrollable under (x, y) by dy CSS px, instantly: the
+  // innermost scrolling pane (Messenger's chat list / message list), else the
+  // window. Returns false if nothing moved. Much faster than a mouse wheel,
+  // which Chrome animates.
+  const scrollAt = (x, y, dy) => {
+    for (let el = document.elementFromPoint(x, y); el && el !== document.documentElement; el = el.parentElement) {
+      if (el.scrollHeight <= el.clientHeight + 1) continue;
+      if (!/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) continue;
+      const before = el.scrollTop;
+      el.scrollBy({ top: dy, behavior: 'instant' });
+      if (el.scrollTop !== before) return true;
+    }
+    const before = scrollY;
+    window.scrollBy({ top: dy, behavior: 'instant' });
+    return scrollY !== before;
+  };
+
+  window.__fbc = { move, target, reveal, videoAt, rect, scrollAt, clear: () => mark(null) };
 }
 
 function wantMode(url) {
@@ -219,7 +236,7 @@ function toModeUrl(url, mode) {
 
 async function launchView(s, mode) {
   const desk = mode === 'desk';
-  const scale = desk ? Math.min(s.zoom / 100, s.w / DESKTOP_MIN_WIDTH) : s.zoom / 100;
+  const scale = s.zoom / 100;
   const hCss = Math.round(s.h / scale);
   // Overscan: render extra rows above and below the phone's view so it can
   // scroll locally without blank areas. Off for the desktop (Messenger)
@@ -454,8 +471,15 @@ async function runAction(s, q) {
       const dx = parseInt(q.get('dx') || '0', 10) / v.scale;
       let wheelDy = parseInt(q.get('dy') || '0', 10) / v.scale;
       if (v.margin > 0 && wheelDy && await scrollView(v, wheelDy)) wheelDy = 0;
-      // Wheel for sideways scrolling, the desktop view, and inner scroll
-      // areas that the window scroll can't move.
+      // Inner panes (Messenger lists) and the desktop view: scroll the pane
+      // under the finger directly, no animation to wait for.
+      if (wheelDy && await page.evaluate(([px, py, d]) => !!(window.__fbc && window.__fbc.scrollAt(px, py, d)),
+        [x, y, wheelDy]).catch(() => false)) {
+        wheelDy = 0;
+        await sleep(40); // let lazy lists render the newly visible rows
+      }
+      // Wheel for sideways scrolling and scrollers that only react to wheel
+      // events.
       if (dx || wheelDy) {
         await page.mouse.move(x, y);
         await page.mouse.wheel(dx, wheelDy);

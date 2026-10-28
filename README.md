@@ -45,7 +45,8 @@ Each phone gets two persistent Chrome profiles in `<DATA_DIR>/profiles/<clientId
 - `mob`: Android UA, m.facebook.com
 - `desk`: desktop UA, used automatically for `facebook.com/messages`, messenger.com, m.me, and when
   the m.facebook.com Messenger tab shows its in-page "Tải ứng dụng Messenger" wall (detected by text
-  for 8 s after a tap). Cookies are copied
+  for 8 s after a tap). Rendered at the phone's own width (not a scaled-down 900 px page), so
+  Facebook's responsive layout gives a single column with normal-size text. Cookies are copied
   between them; IndexedDB persists so the Messenger E2EE PIN is asked only once.
 
 Every page gets an init script (`pageHelpers` in `server.js`) that blocks inline video playback,
