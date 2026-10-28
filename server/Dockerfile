@@ -1,13 +1,15 @@
-# Runs on Synology NAS (x86_64) as well as ARM64 boxes.
+# Built for an ARM64 Synology NAS (CI publishes linux/arm64 only).
 FROM node:22-bookworm-slim
 
-ARG TARGETARCH
 # Set by CI so the log says which build is running.
 ARG BUILD_VERSION=dev
 
+# CHANNEL empty: use Playwright's Chromium directly. Google Chrome has no
+# ARM build, and trying it first on every browser launch only costs time.
 ENV NODE_ENV=production \
     PORT=8080 \
     DATA_DIR=/data \
+    CHANNEL= \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     BUILD_VERSION=${BUILD_VERSION}
 
@@ -20,14 +22,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 # - python3 + yt-dlp: downloads videos for native playback on the phone.
 # - fonts-noto-core: Vietnamese text renders correctly in Chromium.
 # - tini: reaps Chromium child processes and forwards stop signals.
-# - Playwright Chromium (+ its system libraries) for amd64/arm64. Google Chrome,
-#   which has the H.264 codec Facebook videos need for Live view, only exists
-#   for amd64; on ARM the server falls back to Chromium automatically.
+# - Playwright Chromium and its system libraries.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip tini ca-certificates fonts-noto-core \
  && pip3 install --no-cache-dir --break-system-packages yt-dlp \
  && npx playwright install --with-deps chromium \
- && if [ "$TARGETARCH" = "amd64" ]; then npx playwright install --with-deps chrome; fi \
  && rm -rf /var/lib/apt/lists/* /root/.cache
 
 COPY server.js docker-entrypoint.sh ./

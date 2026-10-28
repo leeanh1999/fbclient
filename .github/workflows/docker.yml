@@ -23,20 +23,10 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  # Each architecture builds on its own native runner: arm64 under QEMU
-  # emulation took tens of minutes (npm, apt, Chromium install all emulated).
+  # The server runs on an ARM NAS: build arm64 only, natively on GitHub's
+  # ARM runner (QEMU emulation took 10+ minutes).
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            arch: amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -50,22 +40,22 @@ jobs:
         id: info
         run: echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Build and actually run the image of this architecture first.
+      # Build and actually run the image before publishing it.
       - name: Build for testing
         uses: docker/build-push-action@v6
         with:
           context: server
-          platforms: ${{ matrix.platform }}
+          platforms: linux/arm64
           load: true
           tags: fbclient:test
           build-args: BUILD_VERSION=${{ steps.info.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # CI can't reach Facebook through the private proxy: point PROXY at a
       # closed port and use a local page, then check that the browser renders
       # a frame, the overscan buffer is applied and the live stream answers.
-      - name: Smoke test container (${{ matrix.arch }})
+      - name: Smoke test container
         run: |
           docker run -d --name test -p 8080:8080 --shm-size=512m \
             -e PROXY=socks5://127.0.0.1:9 -e 'HOME_URL=data:text/html,<h1>fbclient</h1>' fbclient:test
@@ -98,56 +88,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Push this architecture by digest only (from the cache filled above);
-      # the merge job puts both under the real tags.
-      - name: Push ${{ matrix.arch }} by digest
-        if: github.event_name != 'pull_request'
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: server
-          platforms: ${{ matrix.platform }}
-          build-args: BUILD_VERSION=${{ steps.info.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        if: github.event_name != 'pull_request'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.push.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
-        with:
-          name: digest-${{ matrix.arch }}
-          path: /tmp/digests/*
-          retention-days: 1
-
-  merge:
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digest-*
-          merge-multiple: true
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Image tags
         id: meta
         uses: docker/metadata-action@v5
@@ -159,12 +99,15 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=short
 
-      - name: Create multi-arch tags (amd64 + arm64)
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
-
-      - name: Inspect
-        run: docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+      # Same build as tested above, straight from the cache.
+      - name: Push to GHCR (arm64)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: BUILD_VERSION=${{ steps.info.outputs.version }}
+          cache-from: type=gha

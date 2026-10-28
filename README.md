@@ -13,17 +13,19 @@ preverified (class 45 + StackMap) for real phones (Nokia E6 / S60) and point at
 
 ## Deploy on Synology NAS (Docker)
 1. Container Manager → Project → Create, paste [`docker-compose.yml`](docker-compose.yml)
-   (image `ghcr.io/leeanh1999/fbclient:latest`, amd64 + arm64, port **5080**).
+   (image `ghcr.io/leeanh1999/fbclient:latest`, **arm64 only**, port **5080**; on an x86 NAS use
+   `build: ./server` in the compose file instead of `image`).
 2. The proxy `proxy-host` is a Tailscale address: the NAS must be on the same tailnet
    (Tailscale package for DSM) for the container to reach it.
 3. Updates: put [`deploy.sh`](deploy.sh) next to the compose file and run `sudo ./deploy.sh`
    (pulls the image, restarts, waits for health, copies the latest app release to `APP_DIR`).
 
-On ARM NAS models the image uses Playwright Chromium (Google Chrome has no ARM build): pages and
-the native video player work, but videos playing *inside* the page in Live view need Chrome's H.264
-codec, which only the amd64 image has. Each phone uses roughly 0.6–1 GB RAM while active.
+The image uses Playwright Chromium (`CHANNEL=`; Google Chrome has no ARM build). Videos play in
+the phone's native player, so Chromium's missing H.264 codec doesn't matter. Each phone uses
+roughly 0.6–1 GB RAM while active.
 
-CI (`.github/workflows`): `docker.yml` builds + smoke-tests the image and pushes it to GHCR;
+CI (`.github/workflows`): `docker.yml` builds the arm64 image natively on GitHub's ARM runner
+(`ubuntu-24.04-arm`, ~2–3 min; QEMU took 10+), smoke-tests it and pushes it to GHCR;
 `j2me.yml` builds the prod app, checks the bytecode and, on `v*` tags, attaches it to the release.
 
 ## Server

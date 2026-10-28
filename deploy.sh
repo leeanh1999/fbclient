@@ -54,10 +54,10 @@ fi
 echo "Compose file: $DIR/$FILE"
 COMPOSE+=(-f "$FILE" -p "$PROJECT")
 
-# The image is built for amd64 and arm64 only.
+# The image is built for arm64 only.
 case "$(uname -m)" in
-  x86_64|aarch64|arm64) ;;
-  *) die "NAS architecture $(uname -m): the image only exists for amd64 and arm64." ;;
+  aarch64|arm64) ;;
+  *) die "NAS architecture $(uname -m): the image only exists for arm64 (build it locally: 'build: ./server' in the compose file)." ;;
 esac
 
 OLD=$(docker image inspect -f '{{.Id}}' "$IMAGE:latest" 2>/dev/null || true)
