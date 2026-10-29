@@ -192,6 +192,10 @@ class Net implements Runnable {
         sb.append("&z=").append(app.zoom);
         sb.append("&f=").append(app.png ? "png" : "jpg");
         sb.append("&q=").append(app.quality);
+        // Page mode: the page as drawing commands, scrolled here (/a only;
+        // the server falls back to text + image or a screenshot where it
+        // can't, and /live always sends screenshots).
+        sb.append("&m=p");
         sb.append(app.keyParam("&"));
         return sb.toString();
     }
@@ -201,17 +205,32 @@ class Net implements Runnable {
         StringBuffer url = new StringBuffer(app.server);
         url.append("/a?").append(viewParams());
         url.append("&hash=").append(lastHash);
+        // Page mode: where the phone's view is, so the server acts there.
+        int sentSy = c.pageScroll();
+        if (sentSy >= 0) {
+            url.append("&sy=").append(sentSy);
+        }
         if (params.length() > 0) {
             url.append('&').append(params);
         }
 
         HttpConnection hc = null;
         InputStream in = null;
+        long sentAt = System.currentTimeMillis();
         try {
             hc = (HttpConnection) Connector.open(app.connUrl(url.toString()), Connector.READ, true);
             hc.setRequestMethod(HttpConnection.GET);
             int code = hc.getResponseCode();
             String u = hc.getHeaderField("X-Url");
+            // Switching to/from Messenger on the server: splash until a
+            // later reply.
+            String loading = hc.getHeaderField("X-Loading");
+            if (loading != null) {
+                c.showSplash("facebook".equals(loading)
+                        ? BrowserCanvas.SPLASH_FACEBOOK : BrowserCanvas.SPLASH_MESSENGER);
+            } else if (code == HttpConnection.HTTP_OK || code == HttpConnection.HTTP_NO_CONTENT) {
+                c.hideSplash(sentAt);
+            }
             if (u != null) {
                 currentUrl = urlDecode(u);
             }
@@ -223,17 +242,36 @@ class Net implements Runnable {
             String oy = hc.getHeaderField("X-Oy");
             String offer = hc.getHeaderField("X-Video-Offer");
             String focus = hc.getHeaderField("X-Focus");
+            // Text mode: that many bytes of text lines precede the image.
+            String xText = hc.getHeaderField("X-Text");
+            int textLen = xText == null ? 0 : FbMidlet.parseInt(xText, 0);
+            String xPage = hc.getHeaderField("X-Page");
+            String xSy = hc.getHeaderField("X-Sy");
 
             boolean changed = false;
-            if (code == HttpConnection.HTTP_OK) {
+            if (code == HttpConnection.HTTP_OK && xPage != null) {
+                // Page mode: drawing commands, no image.
+                in = hc.openInputStream();
+                byte[] data = readAll(in, (int) hc.getLength());
+                PageView pv = PageView.parse(utf8(data, 0, data.length), xPage);
+                data = null;
+                if (hash != null) {
+                    lastHash = hash;
+                }
+                c.applyPage(pv, xSy == null ? 0 : FbMidlet.parseInt(xSy, 0), sentSy);
+                changed = true;
+            } else if (code == HttpConnection.HTTP_OK) {
                 long t0 = System.currentTimeMillis();
                 in = hc.openInputStream();
                 byte[] data = readAll(in, (int) hc.getLength());
                 Image img;
                 try {
-                    img = Image.createImage(data, 0, data.length);
-                    data = null;
+                    img = Image.createImage(data, textLen, data.length - textLen);
                     img = fitScreen(img, c.getWidth());
+                    if (textLen > 0) {
+                        img = TextFrame.draw(img, data, 0, textLen);
+                    }
+                    data = null;
                 } catch (OutOfMemoryError e) {
                     data = null;
                     if (app.overscan > FbMidlet.OVERSCAN_LOW_MEM) {
@@ -267,8 +305,9 @@ class Net implements Runnable {
             } else if (videoErr != null) {
                 app.display.callSerially(new UiTask(app, UiTask.VIDEO_ERROR, urlDecode(videoErr), false));
             }
-            if (focus != null) {
+            if (focus != null && c.page == null) {
                 // After the frame, so the highlight matches the new image.
+                // (Page mode moves the focus on the phone.)
                 c.setFocus(parseRect(focus));
             }
             if (offer != null) {
@@ -419,7 +458,7 @@ class Net implements Runnable {
         }
     }
 
-    private static void close(InputStream in, HttpConnection hc) {
+    static void close(InputStream in, HttpConnection hc) {
         if (in != null) {
             try {
                 in.close();
@@ -436,7 +475,7 @@ class Net implements Runnable {
         }
     }
 
-    private static byte[] readAll(InputStream in, int len) throws Exception {
+    static byte[] readAll(InputStream in, int len) throws Exception {
         if (len > 0) {
             byte[] b = new byte[len];
             int off = 0;
@@ -510,18 +549,23 @@ class Net implements Runnable {
     }
 
     private static String utf8(byte[] b) {
+        return utf8(b, 0, b.length);
+    }
+
+    static String utf8(byte[] b, int off, int len) {
         StringBuffer sb = new StringBuffer();
-        int i = 0;
-        while (i < b.length) {
+        int i = off;
+        int n = off + len;
+        while (i < n) {
             int c = b[i++] & 0xFF;
             if (c < 0x80) {
                 sb.append((char) c);
-            } else if (c < 0xE0 && i < b.length) {
+            } else if (c < 0xE0 && i < n) {
                 sb.append((char) (((c & 0x1F) << 6) | (b[i++] & 0x3F)));
-            } else if (c < 0xF0 && i + 1 < b.length) {
+            } else if (c < 0xF0 && i + 1 < n) {
                 sb.append((char) (((c & 0x0F) << 12) | ((b[i] & 0x3F) << 6) | (b[i + 1] & 0x3F)));
                 i += 2;
-            } else if (i + 2 < b.length) {
+            } else if (i + 2 < n) {
                 int cp = ((c & 0x07) << 18) | ((b[i] & 0x3F) << 12)
                         | ((b[i + 1] & 0x3F) << 6) | (b[i + 2] & 0x3F);
                 i += 3;
@@ -530,7 +574,7 @@ class Net implements Runnable {
                 sb.append((char) (0xDC00 + (cp & 0x3FF)));
             } else {
                 sb.append('?');
-                i = b.length;
+                i = n;
             }
         }
         return sb.toString();

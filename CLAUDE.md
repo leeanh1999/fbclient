@@ -61,7 +61,11 @@ attaches `FbClient.jar/.jad` to the GitHub release.
 Client structure (`client/src/fbc/`): `FbMidlet` (settings in RMS, forms, server URL) ·
 `BrowserCanvas` (draws frames, focus rectangle, touch/key handling) · `Net` (single background
 worker thread with an action queue; after each action it polls frames every 250 ms until 3 are
-unchanged or 6 s pass) · `LiveStream` (`/live` push stream) · `VideoView` (native MMAPI player)
+unchanged or 6 s pass) · `TextFrame` (text mode: draws the server's text lines with phone
+fonts over a text-free screenshot) · `PageView` (page mode: parses and paints drawing commands,
+scrolled locally) · `ImageLoader` (page mode images from `/img`, own thread, cached by key) · `FocusRing` (D-pad
+outline) ·
+`LiveStream` (`/live` push stream) · `VideoView` (native MMAPI player)
 · `MenuOverlay` / `Icons` (vector-drawn UI).
 
 ## Server architecture (`server/server.js`)
@@ -75,6 +79,13 @@ unchanged or 6 s pass) · `LiveStream` (`/live` push stream) · `VideoView` (nat
   `window.__fbc`, used by `op=move/activate/click`.
 - `handle()` routes `/ping`, `/a` (one action + screenshot; `runAction` switch on `op`), `/live`
   (CDP screencast pushed as `F <oy> <len>\n` + JPEG), `/vs` and `/v/<k>.mp4` (video).
+- Text mode (`m=t`): `__fbc.textDump` lists visible text lines, the screenshot hides glyphs
+  (`HIDE_TEXT_CSS`) and the body is text (`X-Text` bytes) + image. Falls back to a plain screenshot.
+- Page mode (`m=p&sy=`): `__fbc.pageDump` returns drawing commands for a long stretch plus image
+  recipes (`addRecipes`, per session); `placeView` (mobile) or `__fbc.paneTo` (desktop: the inner
+  scrolling pane is the document) puts the server's view at the phone's `sy` before each action.
+  `/img` renders recipes in an extra tab of the session's mobile browser (`imgPage`, left alone by
+  the popup handler) into PNG/JPEG sheets. `__fbc.dumpKey` lets polls skip unchanged dumps. Check changes by rendering a dump next to a screenshot of the same state.
 - Responses use a hash so the client gets `204` when the frame is unchanged. Overscan (`ov`)
   renders a taller image in the mobile view, and `X-Oy` gives the view offset.
 - Video: the server never plays video in Chromium. It finds the MP4 URL, downloads it with yt-dlp

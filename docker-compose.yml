@@ -26,7 +26,9 @@ services:
       # enter the same value in the app (Menu > Settings > Access key).
       # - TOKEN=change-me
       # Close a phone's browser after this many idle minutes (frees RAM).
-      - IDLE_MIN=30
+      - IDLE_MIN=5
+      # Close the Messenger (desktop) browser after this many minutes unused.
+      - DESK_IDLE_MIN=2
       # Update yt-dlp on every start (Facebook changes break old versions).
       - YTDLP_AUTO_UPDATE=1
 

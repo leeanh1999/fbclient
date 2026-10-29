@@ -3,6 +3,8 @@ public class Graphics {
     public static final int HCENTER = 1, VCENTER = 2, LEFT = 4, RIGHT = 8, TOP = 16, BOTTOM = 32, BASELINE = 64;
     public void setColor(int c) {}
     public void setFont(Font f) {}
+    public void setClip(int x, int y, int w, int h) {}
+    public void clipRect(int x, int y, int w, int h) {}
     public void fillRect(int x, int y, int w, int h) {}
     public void fillRoundRect(int x, int y, int w, int h, int a, int b) {}
     public void fillTriangle(int a, int b, int c, int d, int e, int f) {}

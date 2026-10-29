@@ -15,18 +15,23 @@ import javax.microedition.media.control.VolumeControl;
  * scaled to fit the screen with its own aspect ratio.
  *
  * Keys: 5/FIRE pause, 4/6 or left/right seek 10 s, 2/8 or up/down volume,
- * 9 next video, #/1/soft keys close.
- * Touch: tap video = pause; bar Close | -10s | Play/Pause | +10s | Next.
+ * 7 previous video, 9 next video, #/1/soft keys close.
+ * Touch: tap video = pause; bar Close | Previous | -10s | Play/Pause | +10s | Next.
+ * While playing, the bar hides after a few seconds and the video fills the
+ * screen (aspect ratio kept); a tap, or an arrow key, brings it back.
  */
 class VideoView extends Canvas implements Runnable, PlayerListener {
 
     private static final int B_CLOSE = 0;
-    private static final int B_REWIND = 1;
-    private static final int B_PLAY = 2;
-    private static final int B_FFWD = 3;
-    private static final int B_NEXT = 4;
-    private static final int BUTTONS = 5;
+    private static final int B_PREV = 1;
+    private static final int B_REWIND = 2;
+    private static final int B_PLAY = 3;
+    private static final int B_FFWD = 4;
+    private static final int B_NEXT = 5;
+    private static final int BUTTONS = 6;
     private static final long SEEK_US = 10000000L;
+    // The bar hides this long after the last touch or key while playing.
+    private static final int BAR_MS = 3000;
 
     private static final int C_BAR = 0x18191A;
     private static final int C_ICON = 0xE4E6EB;
@@ -47,6 +52,12 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     // Video size reported by the server (from the MP4), 0 if unknown.
     private int srcW, srcH;
     private int pressedButton = -1;
+    private VideoControl video;
+    // Control bar on screen; hidden while playing, until a touch or key.
+    private volatile boolean barShown = true;
+    private volatile long barUntil;
+    // The touch in progress only brought the bar back.
+    private boolean wakeTouch;
 
     VideoView(FbMidlet app, String videoKey) {
         this.app = app;
@@ -83,6 +94,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             p.addPlayerListener(this);
             p.realize();
             VideoControl vc = (VideoControl) p.getControl("VideoControl");
+            video = vc;
             if (vc != null) {
                 vc.initDisplayMode(VideoControl.USE_DIRECT_VIDEO, this);
                 fit(vc);
@@ -98,8 +110,13 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             }
             p.start();
             setStatus(null);
-            // Keep the progress bar moving.
+            showBar();
+            // Keep the progress bar moving; hide the bar once left alone.
             while (!closed) {
+                if (barShown && !paused && !ended && status == null
+                        && System.currentTimeMillis() > barUntil) {
+                    setBar(false);
+                }
                 repaint();
                 Thread.sleep(500);
             }
@@ -120,10 +137,14 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         }
     }
 
-    /** Scale the video to fit above the control bar, keeping aspect ratio. */
+    /**
+     * Scale the video to fit above the control bar (the whole screen when it
+     * is hidden), keeping aspect ratio. The video layer covers whatever the
+     * canvas draws on many phones, so the bar never overlaps it.
+     */
     private void fit(VideoControl vc) {
         int aw = getWidth();
-        int ah = getHeight() - barH;
+        int ah = getHeight() - (barShown ? barH : 0);
         int sw = srcW;
         int sh = srcH;
         if (sw <= 0 || sh <= 0) {
@@ -149,7 +170,36 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
 
     private void setStatus(String s) {
         status = s;
+        if (s != null) {
+            setBar(true);
+        }
         repaint();
+    }
+
+    /** Show the bar (and keep it a while), e.g. after a touch or key. */
+    private void showBar() {
+        barUntil = System.currentTimeMillis() + BAR_MS;
+        setBar(true);
+    }
+
+    private void setBar(boolean shown) {
+        if (barShown == shown) {
+            return;
+        }
+        barShown = shown;
+        VideoControl vc = video;
+        if (vc != null) {
+            try {
+                fit(vc);
+            } catch (Exception e) {
+                // The player is closing.
+            }
+        }
+        repaint();
+    }
+
+    private int bottom() {
+        return getHeight() - (barShown ? barH : 0);
     }
 
     /** A video request failed (e.g. no next video). */
@@ -161,6 +211,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         if (PlayerListener.END_OF_MEDIA.equals(event)) {
             ended = true;
             paused = true;
+            setBar(true);
         } else if (PlayerListener.ERROR.equals(event)) {
             setStatus("Playback error: " + data);
         }
@@ -172,13 +223,17 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     protected void paint(Graphics g) {
         int w = getWidth();
         int h = getHeight();
+        int vb = bottom();
         g.setColor(0x000000);
-        g.fillRect(0, 0, w, h - barH);
+        g.fillRect(0, 0, w, vb);
         g.setFont(font);
         String s = status;
         if (s != null) {
             g.setColor(0xFFFFFF);
-            g.drawString(s, w / 2, (h - barH) / 2, Graphics.BASELINE | Graphics.HCENTER);
+            g.drawString(s, w / 2, vb / 2, Graphics.BASELINE | Graphics.HCENTER);
+        }
+        if (!barShown) {
+            return;
         }
 
         int y = h - barH;
@@ -216,6 +271,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     private int icon(int button) {
         switch (button) {
             case B_CLOSE: return Icons.CLOSE;
+            case B_PREV: return Icons.PREV;
             case B_REWIND: return Icons.REWIND;
             case B_PLAY: return paused || ended ? Icons.PLAY : Icons.PAUSE;
             case B_FFWD: return Icons.FFWD;
@@ -228,6 +284,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     private void press(int button) {
         switch (button) {
             case B_CLOSE: close(); break;
+            case B_PREV: previous(); break;
             case B_REWIND: seek(-SEEK_US); break;
             case B_PLAY: togglePause(); break;
             case B_FFWD: seek(SEEK_US); break;
@@ -253,6 +310,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
                 p.stop();
             }
             paused = !paused;
+            showBar();
         } catch (Exception e) {
             setStatus("Error: " + e.getMessage());
         }
@@ -305,6 +363,15 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         app.nextVideo();
     }
 
+    /** The video played before this one (the server keeps the history). */
+    private void previous() {
+        dispose();
+        paused = false;
+        ended = false;
+        setStatus("Loading previous video...");
+        app.prevVideo();
+    }
+
     void close() {
         dispose();
         app.display.setCurrent(app.canvas);
@@ -316,6 +383,18 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
 
     protected void keyPressed(int k) {
         k = app.mapKey(k);
+        int action = 0;
+        try {
+            action = getGameAction(k);
+        } catch (Exception e) {
+            // Unknown key code on this device.
+        }
+        boolean arrow = action == UP || action == DOWN || action == LEFT || action == RIGHT;
+        boolean wasHidden = !barShown;
+        showBar();
+        if (wasHidden && arrow && (k < KEY_NUM0 || k > KEY_NUM9)) {
+            return; // an arrow only brings the bar back
+        }
         if (isSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_STAR
                 || k == 27 || k == 8) { // Escape / Backspace (QWERTY)
             close();
@@ -331,16 +410,11 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             case KEY_NUM6: seek(SEEK_US); return;
             case KEY_NUM2: changeVolume(10); return;
             case KEY_NUM8: changeVolume(-10); return;
+            case KEY_NUM7: previous(); return;
             case KEY_NUM9: next(); return;
             default: break;
         }
-        int ga = 0;
-        try {
-            ga = getGameAction(k);
-        } catch (Exception e) {
-            // Unknown key code on this device.
-        }
-        switch (ga) {
+        switch (action) {
             case FIRE: togglePause(); break;
             case LEFT: seek(-SEEK_US); break;
             case RIGHT: seek(SEEK_US); break;
@@ -351,11 +425,14 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     }
 
     private int buttonAt(int x, int y) {
-        return y < getHeight() - barH ? -1 : x * BUTTONS / getWidth();
+        return !barShown || y < getHeight() - barH ? -1 : x * BUTTONS / getWidth();
     }
 
     protected void pointerPressed(int x, int y) {
-        pressedButton = buttonAt(x, y);
+        // With the bar hidden, a touch only brings it back.
+        wakeTouch = !barShown;
+        showBar();
+        pressedButton = wakeTouch ? -1 : buttonAt(x, y);
         repaint();
     }
 
@@ -363,6 +440,10 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         int b = pressedButton;
         pressedButton = -1;
         repaint();
+        if (wakeTouch) {
+            wakeTouch = false;
+            return;
+        }
         if (y < getHeight() - barH) {
             togglePause();
         } else if (b >= 0 && b == buttonAt(x, y)) {

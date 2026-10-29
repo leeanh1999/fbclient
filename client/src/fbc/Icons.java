@@ -35,6 +35,7 @@ final class Icons {
     static final int REWIND = 17;
     static final int FFWD = 18;
     static final int NEXT = 19;
+    static final int PREV = 20;
 
     // cos/sin * 100 for 0, 45, ... 315 degrees (y axis pointing down).
     private static final int[] COS8 = {100, 71, 0, -71, -100, -71, 0, 71};
@@ -235,6 +236,13 @@ final class Icons {
                 g.fillTriangle(x - h * 3 / 4, y - h * 3 / 4, x - h * 3 / 4, y + h * 3 / 4, x + h / 3, y);
                 g.fillRect(x + h / 3, y - h * 3 / 4, Math.max(3, t + 1), h * 3 / 2);
                 break;
+            case PREV: {
+                // NEXT mirrored.
+                int bar = Math.max(3, t + 1);
+                g.fillTriangle(x + h * 3 / 4, y - h * 3 / 4, x + h * 3 / 4, y + h * 3 / 4, x - h / 3, y);
+                g.fillRect(x - h / 3 - bar, y - h * 3 / 4, bar, h * 3 / 2);
+                break;
+            }
             default:
                 break;
         }

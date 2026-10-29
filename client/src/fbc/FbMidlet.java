@@ -82,6 +82,7 @@ public class FbMidlet extends MIDlet
     BrowserCanvas canvas;
     Net net;
     LiveStream stream;
+    ImageLoader loader;
 
     private Form settingsForm;
     private TextField tfServer, tfKey, tfZoom, tfQuality;
@@ -134,7 +135,9 @@ public class FbMidlet extends MIDlet
         canvas = new BrowserCanvas(this);
         net = new Net(this);
         stream = new LiveStream(this);
+        loader = new ImageLoader(this);
         net.start();
+        loader.start();
         display.setCurrent(canvas);
         net.refresh();
         if (live) {
@@ -157,21 +160,55 @@ public class FbMidlet extends MIDlet
         if (stream != null) {
             stream.stop();
         }
+        if (loader != null) {
+            loader.stop();
+        }
         if (net != null) {
             net.stop();
         }
     }
 
+    // Exit waits at most this long for the server to hear op=bye.
+    private static final int BYE_WAIT_MS = 1500;
+    private volatile boolean byeDone;
+
     /**
      * Exit from the menu. Closing a connection another thread is reading
      * can block on BlackBerry, which froze the app here: stop threads in
-     * the background and leave at once.
+     * the background. op=bye lets the server free this phone's browsers
+     * now instead of after its idle timeout; the app leaves once it is sent
+     * or after BYE_WAIT_MS, whichever comes first.
      */
     void exit() {
         if (canvas != null) {
+            canvas.toast("Closing...");
             canvas.dispose();
         }
         new Thread(new UiTask(this, UiTask.SHUTDOWN, null, false)).start();
+        new Thread(new UiTask(this, UiTask.BYE, null, false)).start();
+        new Thread(new UiTask(this, UiTask.LEAVE, null, false)).start();
+    }
+
+    /** Tells the server this phone is gone (best effort). */
+    void sayBye() {
+        try {
+            Net.fetchText(connUrl(server + "/a?id=" + clientId + "&op=bye" + keyParam("&")));
+        } catch (Throwable t) {
+            // 204 (or no server): nothing more to do.
+        }
+        byeDone = true;
+    }
+
+    /** Leaves once op=bye is sent, or after BYE_WAIT_MS. */
+    void leave() {
+        long end = System.currentTimeMillis() + BYE_WAIT_MS;
+        while (!byeDone && System.currentTimeMillis() < end) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                break;
+            }
+        }
         notifyDestroyed();
     }
 
@@ -184,6 +221,9 @@ public class FbMidlet extends MIDlet
             case MenuOverlay.ENTER: net.action("op=key&k=Enter"); break;
             case MenuOverlay.URL: showUrlInput(); break;
             case MenuOverlay.MESSENGER:
+                if (!inMessenger()) {
+                    canvas.showSplash(BrowserCanvas.SPLASH_MESSENGER);
+                }
                 net.action("op=nav&u=" + Net.urlEncode("https://www.facebook.com/messages/"));
                 break;
             case MenuOverlay.VIDEO: canvas.toast("Loading video..."); net.action("op=video"); break;
@@ -192,9 +232,23 @@ public class FbMidlet extends MIDlet
             case MenuOverlay.RELOAD: net.action("op=reload"); break;
             case MenuOverlay.SETTINGS: showSettings(); break;
             case MenuOverlay.EXIT: exit(); break;
-            case MenuOverlay.HOME: net.action("op=home"); break;
+            case MenuOverlay.HOME: home(); break;
             default: break;
         }
+    }
+
+    /** Facebook home; from Messenger with the splash right away. */
+    void home() {
+        if (inMessenger()) {
+            canvas.showSplash(BrowserCanvas.SPLASH_FACEBOOK);
+        }
+        net.action("op=home");
+    }
+
+    /** The current page is Messenger (the server's desktop view). */
+    boolean inMessenger() {
+        String u = net.currentUrl;
+        return u.indexOf("facebook.com/messages") >= 0 || u.indexOf("messenger.com") >= 0;
     }
 
     void toggleLive() {
@@ -220,6 +274,11 @@ public class FbMidlet extends MIDlet
     /** "Next" in the player: the server finds the following video. */
     void nextVideo() {
         net.action("op=nextvideo");
+    }
+
+    /** "Previous" in the player: the video played before, from the server's history. */
+    void prevVideo() {
+        net.action("op=prevvideo");
     }
 
     void videoError(String msg) {
