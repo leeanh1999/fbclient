@@ -14,14 +14,13 @@ import javax.microedition.lcdui.Image;
  * hands the returned screenshot to the canvas.
  *
  * After each action it keeps polling frames quickly until the page stops
- * changing; in live mode it polls continuously (for animations/video).
+ * changing.
  */
 class Net implements Runnable {
 
     private static final String REFRESH = "";
     private static final int BURST_MS = 6000;     // max polling after an action
     private static final int BURST_GAP_MS = 250;  // delay between burst frames
-    private static final int LIVE_GAP_MS = 60;    // delay between live frames
     private static final int STABLE_FRAMES = 3;   // unchanged frames to stop burst
     private static final int ERROR_BACKOFF_MS = 2000;
     // Download + decode of one frame. Slower phones (Nokia E6: ~900 ms for
@@ -107,9 +106,7 @@ class Net implements Runnable {
             synchronized (queue) {
                 while (running && queue.isEmpty()) {
                     long wait = 0;
-                    // A working live stream already delivers every change.
-                    boolean streaming = app.live && app.stream.healthy;
-                    if (!streaming && (app.live || pollUntil > 0)) {
+                    if (pollUntil > 0) {
                         wait = nextPollAt - System.currentTimeMillis();
                         if (wait <= 0) {
                             req = REFRESH;
@@ -158,7 +155,7 @@ class Net implements Runnable {
                 if (backoff > 0 || unchanged >= STABLE_FRAMES || now > pollUntil) {
                     pollUntil = 0;
                 }
-                nextPollAt = now + backoff + (app.live ? LIVE_GAP_MS : BURST_GAP_MS);
+                nextPollAt = now + backoff + BURST_GAP_MS;
             }
             app.canvas.repaint();
         }
@@ -181,7 +178,7 @@ class Net implements Runnable {
      * Returns true if a new frame was received. Always hands the result to
      * the canvas together with the scroll distance it accounts for.
      */
-    /** Session/view query parameters shared by /a and /live. */
+    /** Session/view query parameters for /a. */
     String viewParams() {
         BrowserCanvas c = app.canvas;
         StringBuffer sb = new StringBuffer("id=").append(app.clientId);
@@ -192,9 +189,8 @@ class Net implements Runnable {
         sb.append("&z=").append(app.zoom);
         sb.append("&f=").append(app.png ? "png" : "jpg");
         sb.append("&q=").append(app.quality);
-        // Page mode: the page as drawing commands, scrolled here (/a only;
-        // the server falls back to text + image or a screenshot where it
-        // can't, and /live always sends screenshots).
+        // Page mode: the page as drawing commands, scrolled here (the
+        // server falls back to text + image or a screenshot where it can't).
         sb.append("&m=p");
         sb.append(app.keyParam("&"));
         return sb.toString();

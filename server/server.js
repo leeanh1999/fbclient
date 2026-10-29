@@ -1023,18 +1023,14 @@ function switchSoon(s, url, out) {
 }
 
 function inBackground(s, work) {
-  s.switching = work.then(async () => {
+  s.switching = work.then(() => {
     syncView(active(s));
-    if (s.live) await attachCast(s);
   }).catch((e) => log('switch', e.message)).then(() => {
     s.switching = null;
   });
 }
 
 async function closeSession(s) {
-  // The phone reconnects its live stream to the new session.
-  if (s.live) s.live.sock.destroy();
-  await detachCast(s);
   for (const m of ['mob', 'desk']) {
     if (s[m]) await s[m].ctx.close().catch(() => {});
     s[m] = null;
@@ -1051,8 +1047,8 @@ async function createSession(id, w, h, zoom, ov, res) {
   return s;
 }
 
-// Creating or relaunching a session is serialized per phone: /a and /live
-// often arrive together, and two browsers on one profile broke the login.
+// Creating or relaunching a session is serialized per phone: requests can
+// arrive together, and two browsers on one profile broke the login.
 const sessionLocks = new Map();
 
 function getSession(id, w, h, zoom, ov, res) {
@@ -1304,8 +1300,6 @@ async function runAction(s, q) {
   // At most one view switch per request to avoid ping-pong redirects.
   if (s.pendingSwitch) await switchSoon(s, s.pendingSwitch, out);
   syncView(active(s));
-  // Keep the live stream on whichever view is now active.
-  if (s.live) await attachCast(s);
   return out;
 }
 
@@ -1440,15 +1434,6 @@ async function nextVideo(s) {
   return { err: 'No next video' };
 }
 
-// ---- Live view stream ----
-//
-// Instead of one HTTP request per frame, /live keeps a single connection
-// open and pushes Chrome screencast JPEGs as they are produced (only when
-// the page changes). Each frame is "F <oy> <length>\n" + JPEG bytes. The
-// next frame is requested from Chrome only after the socket has taken the
-// previous one, so the phone's download speed sets the frame rate.
-
-const LIVE_MAX_QUALITY = 65;
 // Low-resolution frames (2/3, 1/2) are scaled up on the phone, which
 // magnifies JPEG artifacts; they have far fewer pixels, so a higher quality
 // is cheap.
@@ -1614,71 +1599,6 @@ async function serveImages(res, q) {
     'Cache-Control': 'no-store',
   });
   res.end(body);
-}
-
-function startLive(req, s, quality) {
-  const sock = req.socket;
-  if (s.live) s.live.sock.destroy(); // one stream per phone
-  sock.setNoDelay(true);
-  // Raw HTTP/1.0 response without length: no chunked encoding for the
-  // phone's HTTP stack to buffer; the body runs until the socket closes.
-  sock.write('HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\n' +
-    'Cache-Control: no-store\r\nConnection: close\r\n\r\n');
-  const client = { sock, quality };
-  s.live = client;
-  sock.on('close', () => {
-    if (s.live === client) {
-      s.live = null;
-      detachCast(s);
-    }
-  });
-  log('live start', s.id);
-  // Restart the screencast so the new connection gets a frame right away
-  // (Chrome only sends one on start or when the page changes).
-  return s.chain.then(async () => {
-    await detachCast(s);
-    await attachCast(s);
-  });
-}
-
-async function attachCast(s) {
-  const v = active(s);
-  if (!s.live || (s.cast && s.cast.view === v)) return;
-  await detachCast(s);
-  let cdp;
-  try {
-    cdp = await v.ctx.newCDPSession(v.page);
-  } catch (e) {
-    log('cast', e.message);
-    return;
-  }
-  const cast = { view: v, cdp };
-  s.cast = cast;
-  cdp.on('Page.screencastFrame', (ev) => {
-    const ack = () => cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {});
-    const c = s.live;
-    if (!c || s.cast !== cast || c.sock.destroyed) return ack();
-    s.last = Date.now();
-    const jpg = Buffer.from(ev.data, 'base64');
-    const oy = Math.round(v.oy * v.scale);
-    c.sock.write(Buffer.concat([Buffer.from(`F ${oy} ${jpg.length}\n`), jpg]), ack);
-  });
-  const vp = v.page.viewportSize() || { width: s.w, height: s.h };
-  await cdp.send('Page.startScreencast', {
-    format: 'jpeg',
-    quality: s.live ? s.live.quality : LIVE_MAX_QUALITY,
-    maxWidth: Math.ceil(s.w / s.res),
-    maxHeight: Math.ceil(vp.height * v.scale / s.res) + 2,
-    everyNthFrame: 1,
-  }).catch((e) => log('screencast', e.message));
-}
-
-async function detachCast(s) {
-  const cast = s.cast;
-  s.cast = null;
-  if (!cast) return;
-  await cast.cdp.send('Page.stopScreencast').catch(() => {});
-  await cast.cdp.detach().catch(() => {});
 }
 
 async function isMessengerWall(page) {
@@ -2097,7 +2017,7 @@ async function handle(req, res) {
     res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
     return res.end(videoStatus(q.get('k') || ''));
   }
-  if (u.pathname !== '/a' && u.pathname !== '/live') {
+  if (u.pathname !== '/a') {
     res.writeHead(404);
     return res.end();
   }
@@ -2126,10 +2046,6 @@ async function handle(req, res) {
   const lastHash = q.get('hash') || '';
 
   const s = await getSession(id, w, h, zoom, ov, rs);
-  if (u.pathname === '/live') {
-    const lq = s.res > 1 ? Math.max(quality, HALF_RES_MIN_QUALITY) : Math.min(quality, LIVE_MAX_QUALITY);
-    return startLive(req, s, lq);
-  }
   // Serialize actions per session.
   const job = s.chain.then(async () => {
     const out = await runAction(s, q);

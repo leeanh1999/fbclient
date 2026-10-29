@@ -24,18 +24,17 @@ final class Icons {
     static final int GLOBE = 6;
     static final int MESSENGER = 7;
     static final int VIDEO = 8;
-    static final int LIVE = 9;
-    static final int RELOAD = 10;
-    static final int SETTINGS = 11;
-    static final int EXIT = 12;
-    static final int CIRCLE = 13; // filled disc, for button backgrounds
-    static final int CLOSE = 14;
-    static final int PLAY = 15;
-    static final int PAUSE = 16;
-    static final int REWIND = 17;
-    static final int FFWD = 18;
-    static final int NEXT = 19;
-    static final int PREV = 20;
+    static final int RELOAD = 9;
+    static final int SETTINGS = 10;
+    static final int EXIT = 11;
+    static final int CIRCLE = 12; // filled disc, for button backgrounds
+    static final int CLOSE = 13;
+    static final int PLAY = 14;
+    static final int PAUSE = 15;
+    static final int REWIND = 16;
+    static final int FFWD = 17;
+    static final int NEXT = 18;
+    static final int PREV = 19;
 
     // cos/sin * 100 for 0, 45, ... 315 degrees (y axis pointing down).
     private static final int[] COS8 = {100, 71, 0, -71, -100, -71, 0, 71};
@@ -161,15 +160,6 @@ final class Icons {
                     g.drawRoundRect(x - h + i, top + i, s - 2 * i, h * 4 / 3 - 2 * i, 6, 6);
                 }
                 g.fillTriangle(x - h / 4, y - h / 3, x - h / 4, y + h / 3, x + h * 2 / 5, y);
-                break;
-            }
-            case LIVE: {
-                int d = h / 2;
-                g.fillArc(x - d / 2 - 1, y - d / 2 - 1, d + 2, d + 2, 0, 360);
-                ring(g, x, y, h * 3 / 5, t, 135, 90);
-                ring(g, x, y, h * 3 / 5, t, -45, 90);
-                ring(g, x, y, h, t, 135, 90);
-                ring(g, x, y, h, t, -45, 90);
                 break;
             }
             case RELOAD: {

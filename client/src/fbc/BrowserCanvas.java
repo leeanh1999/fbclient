@@ -66,8 +66,6 @@ class BrowserCanvas extends Canvas implements Runnable {
     private PageView rangeAsked;
     private int moreAsked = -1;
     private int olderAsked = -1;
-    private static final int LIVE_HOLD_MS = 300;
-    private long liveHoldUntil;
     // D-pad focus: direction held ('u', 'd', 'l', 'r' or 0) and for how long.
     private char holdDir;
     private int holdTicks;
@@ -168,24 +166,6 @@ class BrowserCanvas extends Canvas implements Runnable {
             shownDy -= appliedDy;
         }
         // Unchanged frame after a scroll (e.g. page end): shownDy eases back.
-        liveHoldUntil = System.currentTimeMillis() + LIVE_HOLD_MS;
-        repaint();
-    }
-
-    /**
-     * Frame pushed by the live stream. Skipped while the user is touching
-     * or a scroll is in flight, so the local scroll prediction never jumps;
-     * also briefly after an action reply, as a stream frame captured before
-     * that action could still be in transit.
-     */
-    synchronized void applyLiveFrame(Image img, int oy) {
-        if (page != null || pressed || pendingDy != 0 || shownDy != 0
-                || System.currentTimeMillis() < liveHoldUntil
-                || (app.net != null && app.net.userBusy)) {
-            return;
-        }
-        image = img;
-        imgOy = oy;
         repaint();
     }
 
@@ -215,7 +195,6 @@ class BrowserCanvas extends Canvas implements Runnable {
             int max = p.maxScroll(viewHeight());
             pageSy = FbMidlet.clamp(pageSy, 0, max);
             pageTarget = FbMidlet.clamp(pageTarget, 0, max);
-            liveHoldUntil = System.currentTimeMillis() + LIVE_HOLD_MS;
         }
         repaint();
         pageMoved();
@@ -491,7 +470,7 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
 
         if (menu.open) {
-            menu.paint(g, w, vh, font, app.live, !touchMode,
+            menu.paint(g, w, vh, font, !touchMode,
                     app.net == null ? "" : app.net.currentUrl);
         }
         if (barH > 0) {

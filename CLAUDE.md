@@ -9,7 +9,7 @@ client that only shows images and forwards input; a Node server drives headless 
 (Playwright), renders facebook.com and returns screenshots.
 
 ```
-[J2ME phone: client/] --HTTP /a, /live, /vs, /v/--> [server/server.js + Chromium] --> facebook.com
+[J2ME phone: client/] --HTTP /a, /img, /vs, /v/--> [server/server.js + Chromium] --> facebook.com
 ```
 
 `README.md` is the protocol spec (ops, query params, `X-*` response headers, key map). Keep it in
@@ -64,8 +64,7 @@ worker thread with an action queue; after each action it polls frames every 250 
 unchanged or 6 s pass) · `TextFrame` (text mode: draws the server's text lines with phone
 fonts over a text-free screenshot) · `PageView` (page mode: parses and paints drawing commands,
 scrolled locally) · `ImageLoader` (page mode images from `/img`, own thread, cached by key) · `FocusRing` (D-pad
-outline) ·
-`LiveStream` (`/live` push stream) · `VideoView` (native MMAPI player)
+outline) · `VideoView` (native MMAPI player)
 · `MenuOverlay` / `Icons` (vector-drawn UI).
 
 ## Server architecture (`server/server.js`)
@@ -77,8 +76,8 @@ outline) ·
 - `pageHelpers()` is an init script injected into every page. It runs **in the browser**, not
   Node. It blocks inline video, hides "open app" buttons, and implements D-pad focus navigation as
   `window.__fbc`, used by `op=move/activate/click`.
-- `handle()` routes `/ping`, `/a` (one action + screenshot; `runAction` switch on `op`), `/live`
-  (CDP screencast pushed as `F <oy> <len>\n` + JPEG), `/vs` and `/v/<k>.mp4` (video).
+- `handle()` routes `/ping`, `/a` (one action + screenshot; `runAction` switch on `op`), `/img`,
+  `/vs` and `/v/<k>.mp4` (video).
 - Text mode (`m=t`): `__fbc.textDump` lists visible text lines, the screenshot hides glyphs
   (`HIDE_TEXT_CSS`) and the body is text (`X-Text` bytes) + image. Falls back to a plain screenshot.
 - Page mode (`m=p&sy=`): `__fbc.pageDump` returns drawing commands for a long stretch plus image

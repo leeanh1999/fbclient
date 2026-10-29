@@ -49,14 +49,12 @@ public class FbMidlet extends MIDlet
     boolean png = false;
     int zoom = DEFAULT_ZOOM;
     int quality = DEFAULT_QUALITY;
-    // Continuous frame polling (animations, in-page video).
-    volatile boolean live;
 
     // Tuned for fast WiFi phones like the Nokia E6: native-pixel rendering
     // (sharp text) and higher JPEG quality.
     private static final int DEFAULT_ZOOM = 100;
     private static final int DEFAULT_QUALITY = 75;
-    // 1: zoom/quality defaults changed; 2: live persisted; 3: server and
+    // 1: zoom/quality defaults changed; 2: live persisted (now unused); 3: server and
     // BlackBerry connection persisted; 4: overscan persisted (lowered on
     // slow phones by Net); 5: half resolution persisted (boolean);
     // 6: resolution level persisted (int).
@@ -81,7 +79,6 @@ public class FbMidlet extends MIDlet
     Display display;
     BrowserCanvas canvas;
     Net net;
-    LiveStream stream;
     ImageLoader loader;
 
     private Form settingsForm;
@@ -134,15 +131,11 @@ public class FbMidlet extends MIDlet
         loadSettings();
         canvas = new BrowserCanvas(this);
         net = new Net(this);
-        stream = new LiveStream(this);
         loader = new ImageLoader(this);
         net.start();
         loader.start();
         display.setCurrent(canvas);
         net.refresh();
-        if (live) {
-            stream.start();
-        }
     }
 
     protected void pauseApp() {
@@ -152,13 +145,10 @@ public class FbMidlet extends MIDlet
         shutdown();
     }
 
-    /** Stops every background thread and closes the live connection. */
+    /** Stops every background thread. */
     void shutdown() {
         if (canvas != null) {
             canvas.dispose();
-        }
-        if (stream != null) {
-            stream.stop();
         }
         if (loader != null) {
             loader.stop();
@@ -227,7 +217,6 @@ public class FbMidlet extends MIDlet
                 net.action("op=nav&u=" + Net.urlEncode("https://www.facebook.com/messages/"));
                 break;
             case MenuOverlay.VIDEO: canvas.toast("Loading video..."); net.action("op=video"); break;
-            case MenuOverlay.LIVE: toggleLive(); break;
             case MenuOverlay.FORWARD: net.action("op=fwd"); break;
             case MenuOverlay.RELOAD: net.action("op=reload"); break;
             case MenuOverlay.SETTINGS: showSettings(); break;
@@ -249,18 +238,6 @@ public class FbMidlet extends MIDlet
     boolean inMessenger() {
         String u = net.currentUrl;
         return u.indexOf("facebook.com/messages") >= 0 || u.indexOf("messenger.com") >= 0;
-    }
-
-    void toggleLive() {
-        live = !live;
-        saveSettings();
-        canvas.toast(live ? "Live view ON" : "Live view OFF");
-        if (live) {
-            stream.start();
-        } else {
-            stream.stop();
-        }
-        net.wake();
     }
 
     void openVideo(String videoKey) {
@@ -510,9 +487,6 @@ public class FbMidlet extends MIDlet
             canvas.toast("Settings error: " + t);
         }
         display.setCurrent(canvas);
-        if (!server.equals(oldServer) || bbConn != oldConn) {
-            stream.reconnect();
-        }
         net.resetHash();
         net.refresh();
     }
@@ -591,7 +565,7 @@ public class FbMidlet extends MIDlet
                     // Record written before versioning.
                 }
                 if (version >= 2) {
-                    live = in.readBoolean();
+                    in.readBoolean(); // former live view setting
                 }
                 if (version >= 3) {
                     String s = in.readUTF();
@@ -640,7 +614,7 @@ public class FbMidlet extends MIDlet
             out.writeInt(zoom);
             out.writeInt(quality);
             out.writeInt(SETTINGS_VERSION);
-            out.writeBoolean(live);
+            out.writeBoolean(false); // former live view setting
             // Empty = follow the build's default server.
             out.writeUTF(server.equals(defaultServer) ? "" : server);
             out.writeInt(bbConn);

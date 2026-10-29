@@ -84,8 +84,7 @@ text (UTF-8, `X-Text: <bytes>`) followed by the image. One line per text line:
 `x y w h size flags rrggbb text`, tab separated (image px; flags 1 bold, 2 clip to the
 box, 4 centre, 8 top of the box), skipping text clipped by a scroll pane or covered by an opaque
 element. Pages with a large video in view or a desktop-width page shrunk to fit get a plain
-screenshot (no `X-Text`). Pseudo-element text (`::before`) stays in the image. Live view still
-pushes normal screenshots.
+screenshot (no `X-Text`). Pseudo-element text (`::before`) stays in the image.
 
 `m=p&sy=<y>`: page mode, what the phone always asks for. When nothing on the page changed since the
 dump the phone has (DOM mutations, loads, transitions, scroll position: `__fbc.dumpKey`), the server
@@ -196,20 +195,13 @@ like the Nokia E6) and can be changed in Menu → Settings.
 
 Frames: after every action the client polls every 250 ms until 3 unchanged frames (max 6 s).
 
-**Live view** (menu): `GET /live?<same params as /a>` keeps one connection open; the server pushes
-Chrome screencast JPEGs (`F <oy> <len>\n` + bytes, raw HTTP/1.0 body) only when the page changes,
-and asks Chrome for the next frame only after the socket took the previous one (download speed sets
-the FPS; ~28 fps measured locally on a playing video, quality capped at 65). The stream follows
-mobile/desktop view switches. If no frame arrives (phone HTTP stack buffers), the client falls back
-to polling every 60 ms.
-
 Icons are vector-drawn and anti-aliased (3x supersampled into a cached ARGB image).
 
 Touch: tap = click, drag = scroll (vertical only, with live preview; flick = scroll further),
 long-press = play video under finger. Footer (touch screens): Menu · Home · Back (vector icons).
 
 Menu: bottom sheet over the dimmed page with icon tiles — Type text, Enter, Go to URL, Messenger,
-Play video, Live, Forward, Reload, Settings, Exit (+ Home on keypad-only phones). Arrows + FIRE or tap.
+Play video, Forward, Reload, Settings, Exit (+ Home on keypad-only phones). Arrows + FIRE or tap.
 
 Settings ends with an on-screen **Save** button. BlackBerry OS 7 ignores a StringItem button's
 command, so there it is a self-drawn `FormButton` (CustomItem), and Escape also saves.
@@ -218,7 +210,7 @@ BlackBerry text input is a Form with one field and a **Send** button instead of 
 is only in the BlackBerry-key menu): Enter in the field sends at once and presses Enter on the page;
 Escape sends without Enter; Cancel is in the menu.
 
-Saved across restarts (RMS): server, access key, zoom, image format, JPEG quality, Live view,
+Saved across restarts (RMS): server, access key, zoom, image format, JPEG quality,
 BlackBerry connection.
 
 Text input: the text box has only OK and Cancel (more commands would put them behind S60's

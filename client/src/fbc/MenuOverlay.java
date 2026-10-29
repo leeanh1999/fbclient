@@ -15,22 +15,21 @@ class MenuOverlay {
     static final int URL = 2;
     static final int MESSENGER = 3;
     static final int VIDEO = 4;
-    static final int LIVE = 5;
-    static final int FORWARD = 6;
-    static final int RELOAD = 7;
-    static final int SETTINGS = 8;
-    static final int EXIT = 9;
-    static final int HOME = 10;
+    static final int FORWARD = 5;
+    static final int RELOAD = 6;
+    static final int SETTINGS = 7;
+    static final int EXIT = 8;
+    static final int HOME = 9;
 
     // Short labels: BlackBerry's smallest system font is large, and longer
     // ones forced fewer columns (more rows, so tiny icons).
     private static final String[] LABELS = {
         "Type", "Enter", "URL", "Messenger", "Video",
-        "Live", "Forward", "Reload", "Settings", "Exit", "Home"
+        "Forward", "Reload", "Settings", "Exit", "Home"
     };
     private static final int[] ICON = {
         Icons.KEYBOARD, Icons.ENTER, Icons.GLOBE, Icons.MESSENGER, Icons.VIDEO,
-        Icons.LIVE, Icons.FORWARD, Icons.RELOAD, Icons.SETTINGS, Icons.EXIT, Icons.HOME
+        Icons.FORWARD, Icons.RELOAD, Icons.SETTINGS, Icons.EXIT, Icons.HOME
     };
 
     private static final int C_PANEL = 0xFFFFFF;
@@ -54,7 +53,7 @@ class MenuOverlay {
 
     MenuOverlay(boolean withHome) {
         // Devices without the touch footer also need Home in the menu.
-        int[] base = {TYPE, ENTER, URL, MESSENGER, VIDEO, LIVE, FORWARD, RELOAD, SETTINGS, EXIT};
+        int[] base = {TYPE, ENTER, URL, MESSENGER, VIDEO, FORWARD, RELOAD, SETTINGS, EXIT};
         if (withHome) {
             items = new int[base.length + 1];
             items[0] = HOME;
@@ -131,7 +130,7 @@ class MenuOverlay {
         panelY = vh - HEADER_H - rows * tileH - 8;
     }
 
-    void paint(Graphics g, int w, int vh, Font font, boolean live, boolean showSel, String url) {
+    void paint(Graphics g, int w, int vh, Font font, boolean showSel, String url) {
         layout(w, vh, font);
         dimPage(g, w, vh);
 
@@ -157,18 +156,16 @@ class MenuOverlay {
             int ty = top + HEADER_H + (i / cols) * tileH;
             int cx = tx + tileW / 2;
             int cy = ty + 4 + d / 2;
-            boolean on = a == LIVE && live;
             if (showSel && i == sel) {
                 g.setColor(C_SEL);
                 g.fillRoundRect(tx + 3, ty, tileW - 6, tileH - 2, 14, 14);
             }
-            int circle = on ? C_BLUE : (a == MESSENGER ? 0xE7F0FF : C_TILE);
+            int circle = a == MESSENGER ? 0xE7F0FF : C_TILE;
             Icons.drawSmooth(g, Icons.CIRCLE, cx, cy, d, circle, circle);
-            int fg = on ? 0xFFFFFF : (a == MESSENGER ? C_BLUE : (a == EXIT ? 0xE41E3F : C_TEXT));
+            int fg = a == MESSENGER ? C_BLUE : (a == EXIT ? 0xE41E3F : C_TEXT);
             Icons.drawSmooth(g, ICON[a], cx, cy, d * 11 / 20, fg, circle);
-            String label = a == LIVE && live ? "Live ON" : LABELS[a];
-            g.setColor(showSel && i == sel ? C_BLUE : (on ? C_BLUE : C_TEXT));
-            g.drawString(shorten(label, font, tileW - 4), cx, cy + d / 2 + 4,
+            g.setColor(showSel && i == sel ? C_BLUE : C_TEXT);
+            g.drawString(shorten(LABELS[a], font, tileW - 4), cx, cy + d / 2 + 4,
                     Graphics.TOP | Graphics.HCENTER);
         }
     }
