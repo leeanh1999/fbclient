@@ -192,6 +192,9 @@ class Net implements Runnable {
         // Page mode: the page as drawing commands, scrolled here (the
         // server falls back to text + image or a screenshot where it can't).
         sb.append("&m=p");
+        // The font the phone draws page text with: the server lays the page
+        // out with it too, so lines are as wide there as here.
+        sb.append("&fn=").append(TextFrame.isSharp() ? 's' : 'r');
         sb.append(app.keyParam("&"));
         return sb.toString();
     }

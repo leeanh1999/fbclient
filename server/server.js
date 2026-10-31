@@ -57,11 +57,102 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Injected into every page (addInitScript): blocks inline video playback,
-// hides "open the app" buttons and provides D-pad focus navigation
-// (window.__fbc, used by op=move / op=activate / click).
-function pageHelpers() {
+// The font the phone draws page text with (client/tools/mkfont.py makes
+// it): Roboto for both fn=s (sharp set) and fn=r (smooth set), [regular,
+// bold] as base64. Chromium lays text out with the same font, so lines are
+// as wide here as on the phone (no shrinking, cutting or overlapping).
+const PAGE_FONTS = {};
+for (const set of ['s', 'r']) {
+  try {
+    PAGE_FONTS[set] = ['r', 'b'].map((w) => fs.readFileSync(path.join(__dirname, 'fonts', `${set}-${w}.ttf`)).toString('base64'));
+  } catch (e) {
+    console.log('page font', set, 'missing:', e.message);
+  }
+}
+
+// Page mode: use the phone's font (fn) in the page; waits for it to load.
+async function applyFont(page, fn) {
+  const changed = await page.evaluate(async (f) => {
+    if (!window.__fbc) return false;
+    const c = window.__fbc.useFont(f);
+    if (c && document.fonts) await document.fonts.ready;
+    return c;
+  }, fn).catch(() => false);
+  if (changed) await sleep(100); // reflow, lazy lists re-measuring
+}
+
+// Injected into every page (addInitScript, with PAGE_FONTS): blocks inline
+// video playback, hides "open the app" buttons and provides D-pad focus
+// navigation (window.__fbc, used by op=move / op=activate / click).
+function pageHelpers(fonts) {
   if (window.__fbc) return;
+
+  // Page text in the phone's font (__fbc.useFont; remembered per site, so a
+  // new document has it before its first layout). The font only has the
+  // phone's characters; the page's own web fonts follow it, so icon-font
+  // glyphs (private-use characters) still come from those.
+  const pageFamilies = () => {
+    const names = new Set();
+    if (document.fonts) {
+      for (const ff of document.fonts) {
+        const n = ff.family.replace(/^["']|["']$/g, '').replace(/"/g, '');
+        if (n !== 'FbcText') names.add(`"${n}"`);
+      }
+    }
+    return [...names].join(',');
+  };
+  // FontFaces made from the font data are loaded at once (an @font-face
+  // URL loads later, after Facebook has measured text in the old font and
+  // fixed some widths, e.g. comment bubbles, which then cut the text).
+  const faces = {};
+  const facesOf = (f) => {
+    if (!faces[f]) {
+      faces[f] = fonts[f].map((b64, i) => {
+        const bin = atob(b64);
+        const data = new Uint8Array(bin.length);
+        for (let k = 0; k < bin.length; k++) data[k] = bin.charCodeAt(k);
+        return new FontFace('FbcText', data, { weight: i ? '600 900' : '100 599' });
+      });
+    }
+    return faces[f];
+  };
+  let fontNow = '';
+  let familiesNow = null;
+  const useFont = (f) => {
+    f = fonts && fonts[f] ? f : '';
+    try {
+      if (f) localStorage.setItem('fbc-font', f);
+      else localStorage.removeItem('fbc-font');
+    } catch (e) { /* no storage (about:blank) */ }
+    let st = document.getElementById('fbc-font');
+    const fam = f ? pageFamilies() : '';
+    if (f === fontNow && fam === familiesNow && (!f || st)) return false;
+    if (f !== fontNow && document.fonts) {
+      if (fontNow) for (const ff of facesOf(fontNow)) document.fonts.delete(ff);
+      if (f) for (const ff of facesOf(f)) document.fonts.add(ff);
+    }
+    fontNow = f;
+    familiesNow = fam;
+    if (!f) {
+      if (st) st.remove();
+      return true;
+    }
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'fbc-font';
+    }
+    // No kerning or ligatures: the phone draws glyph after glyph.
+    st.textContent = `*{font-family:FbcText,${fam ? fam + ',' : ''}system-ui,sans-serif!important;` +
+      'font-kerning:none!important;font-variant-ligatures:none!important}';
+    (document.head || document.documentElement).appendChild(st);
+    return true;
+  };
+  try {
+    const f = localStorage.getItem('fbc-font');
+    if (f) useFont(f);
+  } catch (e) { /* no storage */ }
+  // Web fonts loaded later (icon fonts) join the list.
+  if (document.fonts) document.fonts.addEventListener('loadingdone', () => fontNow && useFont(fontNow));
 
   // Videos play in the phone's native player, never inside the page.
   document.addEventListener('play', (e) => {
@@ -911,7 +1002,7 @@ function pageHelpers() {
   const dumpKey = () => [docId, version, scrollPos(), innerWidth, innerHeight].join(':');
 
   window.__fbc = { move, target, reveal, videoAt, rect, scrollAt, textDump, pageDump, scrollPos, paneTo, dumpKey, pinnedAt,
-    clear: () => mark(null) };
+    useFont, clear: () => mark(null) };
 }
 
 function wantMode(url) {
@@ -945,6 +1036,9 @@ async function launchView(s, mode) {
     hasTouch: false,
     userAgent: desk ? UA_DESKTOP : UA_MOBILE,
     locale: 'vi-VN',
+    // The phone's font goes into pages as a data: URL (applyFont), which
+    // Facebook's Content-Security-Policy would block.
+    bypassCSP: true,
     args: ['--disable-dev-shm-usage', '--deny-permission-prompts'],
   };
   if (PROXY) opts.proxy = { server: PROXY };
@@ -963,7 +1057,7 @@ async function launchView(s, mode) {
     delete opts.channel;
     ctx = await chromium.launchPersistentContext(dir, opts);
   }
-  await ctx.addInitScript(pageHelpers);
+  await ctx.addInitScript(pageHelpers, PAGE_FONTS);
   const page = ctx.pages()[0] || await ctx.newPage();
   // oy: CSS offset of the phone's view inside the (taller) viewport.
   const view = { mode, ctx, page, scale, margin, oy: 0, lastUrl: '' };
@@ -1170,6 +1264,7 @@ async function runAction(s, q) {
   const op = q.get('op') || '';
   const v = active(s);
   const page = v.page;
+  if (q.get('m') === 'p') await applyFont(page, q.get('fn') || '');
   // Page mode: the phone scrolls on its own; put the view where the phone's
   // is first, so its coordinates mean the same here.
   if (q.get('m') === 'p' && q.has('sy')) {
@@ -2097,6 +2192,8 @@ async function handle(req, res) {
     let pg = null;
     let same = false;
     let dumpKey = null;
+    // The action may have opened a new document: font first, then dump.
+    if (pageMode) await applyFont(page, q.get('fn') || '');
     if (pageMode && (q.get('op') !== 'move' || out.scrolled)) {
       // Nothing changed since the dump the phone has: no need to dump again.
       const key = await page.evaluate(() => (window.__fbc ? window.__fbc.dumpKey() : null)).catch(() => null);

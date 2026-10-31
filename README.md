@@ -98,6 +98,10 @@ is its scroll position, and everything around it is pinned. Reply: `text/plain` 
 `X-Page: top,bottom,height,bg[,paneX,paneY,paneW,paneH]` (stretch sent, page height, background
 colour, and the pane's box on screen, to which the phone clips the scrolling content) and `X-Sy`
 (where the view is now; differs from `sy` when the server moved it). `X-Focus` is in document px.
+`fn=s|r`: the font the phone draws text with (Roboto; `s`: sharp 1-bit, `r`: smooth). The
+server lays the page out with the same font (`server/fonts/`), so text lines are as wide as on the
+phone. Without `fn` the page keeps its own fonts. A tap on a pinned bar (`position: fixed`) lands
+on that bar, however the view is scrolled. Text in the body is NFC.
 One command per line, tab separated, phone px:
 
 | | fields | |

@@ -67,8 +67,10 @@ scrolled locally) · `ImageLoader` (page mode images from `/img`, own thread, ca
 outline) · `VideoView` (native MMAPI player)
 · `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: Roboto bitmap
 fonts in `client/res/fonts/`, smooth and sharp 1-bit sets (`r`/`b` + `s`), tinted per colour and
-blended with the known background; Settings > Text size / Font). Regenerate the fonts with
-`python client/tools/mkfont.py` (Pillow) and keep its `SIZES` in sync with `TextFrame.BMP_SIZES`.
+blended with the known background; Settings > Text size / Font). The server lays pages out with
+the same font (`server/fonts/`, `fn=` param), so lines are as wide as on the phone. Regenerate
+both with `python client/tools/mkfont.py` (Pillow, freetype-py, fonttools) and keep its `SIZES` in
+sync with `TextFrame.BMP_SIZES`.
 
 ## Server architecture (`server/server.js`)
 

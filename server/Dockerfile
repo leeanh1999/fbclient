@@ -31,6 +31,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* /root/.cache
 
 COPY server.js docker-entrypoint.sh ./
+# Page fonts the phone draws with (made by client/tools/mkfont.py).
+COPY fonts/ ./fonts/
 
 RUN mkdir -p /data
 VOLUME ["/data"]

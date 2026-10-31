@@ -46,8 +46,12 @@ final class TextFont {
         this.em = em;
     }
 
-    /** Loads /fonts/<r|b>[s]<size> (s: sharp, 1-bit); null if missing or broken. */
-    static TextFont load(int size, boolean bold, boolean sharp) {
+    /**
+     * Loads /fonts/<r|b>[s]<size> (s: sharp set); null if missing or broken.
+     * hinted: space glyphs by their hinted (whole px) advances, even for the
+     * app's own text; else by the unhinted ones the page was laid out with.
+     */
+    static TextFont load(int size, boolean bold, boolean sharp, boolean hinted) {
         String name = "/fonts/" + (bold ? "b" : "r") + (sharp ? "s" : "") + size;
         InputStream in = null;
         try {
@@ -57,7 +61,8 @@ final class TextFont {
                 return null;
             }
             DataInputStream d = new DataInputStream(in);
-            if (d.readUnsignedByte() != 2) {
+            int version = d.readUnsignedByte();
+            if (version < 2 || version > 4) {
                 return null;
             }
             t.bold = bold;
@@ -82,21 +87,37 @@ final class TextFont {
                 t.gw[i] = d.readUnsignedByte();
                 t.gl[i] = d.readByte();
                 t.adv[i] = d.readUnsignedShort();
+                if (version >= 3) {
+                    int h = d.readUnsignedByte();
+                    if (hinted) {
+                        t.adv[i] = h * 8;
+                    }
+                }
                 if (t.chars[i] < 128) {
                     t.ascii[t.chars[i]] = i;
                 }
             }
-            Image atlas = Image.createImage(name + ".png");
-            int w = atlas.getWidth();
-            int h = atlas.getHeight();
-            int[] px = new int[w * h];
-            atlas.getRGB(px, 0, w, 0, 0, w, h);
-            atlas = null;
-            t.alpha = new byte[w * h];
-            for (int i = 0; i < px.length; i++) {
-                t.alpha[i] = (byte) (px[i] >>> 24);
+            if (version >= 4) {
+                // Coverage bytes follow the table: exact on every phone (S60
+                // decodes PNG transparency as on/off only).
+                int w = d.readUnsignedShort();
+                int h = d.readUnsignedShort();
+                t.alpha = new byte[w * h];
+                d.readFully(t.alpha);
+                t.atlasW = w;
+            } else {
+                Image atlas = Image.createImage(name + ".png");
+                int w = atlas.getWidth();
+                int h = atlas.getHeight();
+                int[] px = new int[w * h];
+                atlas.getRGB(px, 0, w, 0, 0, w, h);
+                atlas = null;
+                t.alpha = new byte[w * h];
+                for (int i = 0; i < px.length; i++) {
+                    t.alpha[i] = (byte) (px[i] >>> 24);
+                }
+                t.atlasW = w;
             }
-            t.atlasW = w;
             t.tints = new Hashtable();
             return t;
         } catch (Throwable e) {

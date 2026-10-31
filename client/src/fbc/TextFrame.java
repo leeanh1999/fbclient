@@ -20,9 +20,11 @@ final class TextFrame {
     // The app's fonts: bitmaps in the jar (em px, as tools/mkfont.py
     // SIZES), [style][size], loaded on first use. All text the app draws
     // uses them; phone fonts only stand in if the jar lacks one.
-    private static final int[] BMP_SIZES = {9, 10, 11, 12, 13, 14, 16, 18};
+    private static final int[] BMP_SIZES = {9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24};
     // [sharp][style][size]
     private static final TextFont[][][] BMP = new TextFont[2][2][BMP_SIZES.length];
+    // The same for the app's own text, spaced by hinted advances.
+    private static final TextFont[][][] UI = new TextFont[2][2][BMP_SIZES.length];
     // Sharp (1-bit, hinted) glyphs instead of smooth (antialiased) ones.
     private static boolean sharp;
     private static TextFont[] broken;
@@ -58,6 +60,10 @@ final class TextFrame {
     /** Zoom the page is laid out at: the setting, raised for Large text. */
     static int pageZoom() {
         return zoom * ZOOM_PCT[textFont] / 100;
+    }
+
+    static boolean isSharp() {
+        return sharp;
     }
 
     static void setSharp(boolean v) {
@@ -159,10 +165,15 @@ final class TextFrame {
 
     /** Bitmap font i (BMP_SIZES); a phone font only if the jar lacks it. */
     private static TextFont fontAt(int i, boolean bold) {
+        return fontAt(i, bold, false);
+    }
+
+    private static TextFont fontAt(int i, boolean bold, boolean ui) {
         int style = bold ? 1 : 0;
-        TextFont t = BMP[sharp ? 1 : 0][style][i];
+        TextFont[][][] cache = ui ? UI : BMP;
+        TextFont t = cache[sharp ? 1 : 0][style][i];
         if (t == null) {
-            t = TextFont.load(BMP_SIZES[i], bold, sharp);
+            t = TextFont.load(BMP_SIZES[i], bold, sharp, ui);
             if (t == null) {
                 if (broken == null) {
                     broken = new TextFont[2];
@@ -174,7 +185,7 @@ final class TextFrame {
                     broken[style] = t;
                 }
             }
-            BMP[sharp ? 1 : 0][style][i] = t;
+            cache[sharp ? 1 : 0][style][i] = t;
         }
         return t;
     }
@@ -197,7 +208,7 @@ final class TextFrame {
 
     /** The font for the app's own text of px size (UI_SIZE, UI_BIG). */
     static TextFont ui(int px, boolean bold) {
-        return fontAt(index(px * pageZoom() / 100), bold);
+        return fontAt(index(px * pageZoom() / 100), bold, true);
     }
 
     /** How far text may run past the right of its box (phone px). */
