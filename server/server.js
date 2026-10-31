@@ -514,6 +514,28 @@ function pageHelpers() {
     return r.bottom >= innerHeight - 1 && r.top > innerHeight / 2;
   };
 
+  // Page mode tap at (x, y), y from the top of the phone's view (CSS px):
+  // the viewport y of a pinned (position: fixed) bar the phone draws there,
+  // or null. pageDump puts top bars at their viewport y and bottom bars at
+  // the bottom of the phone's view, while the viewport is taller
+  // (overscan), so such taps don't land at view offset + y.
+  const pinnedAt = (x, y, viewH) => {
+    const fixedOf = (el) => {
+      for (let n = el; n && n !== document.body; n = n.parentElement) {
+        if (getComputedStyle(n).position === 'fixed') return n;
+      }
+      return null;
+    };
+    const top = fixedOf(document.elementFromPoint(x, y));
+    if (top && !atViewportBottom(top)) return y;
+    const by = y + innerHeight - viewH;
+    if (by < innerHeight) {
+      const bottom = fixedOf(document.elementFromPoint(x, by));
+      if (bottom && atViewportBottom(bottom)) return by;
+    }
+    return null;
+  };
+
   const pageDump = (oy, viewH, desk) => {
     const z = window.visualViewport ? visualViewport.scale : 1;
     const doc = document.documentElement;
@@ -888,7 +910,8 @@ function pageHelpers() {
   if (document.fonts) document.fonts.addEventListener('loadingdone', bump);
   const dumpKey = () => [docId, version, scrollPos(), innerWidth, innerHeight].join(':');
 
-  window.__fbc = { move, target, reveal, videoAt, rect, scrollAt, textDump, pageDump, scrollPos, paneTo, dumpKey, clear: () => mark(null) };
+  window.__fbc = { move, target, reveal, videoAt, rect, scrollAt, textDump, pageDump, scrollPos, paneTo, dumpKey, pinnedAt,
+    clear: () => mark(null) };
 }
 
 function wantMode(url) {
@@ -1157,7 +1180,13 @@ async function runAction(s, q) {
   // Client coordinates are device pixels within its view; Playwright wants
   // CSS pixels within the (overscanned) viewport.
   const x = parseInt(q.get('x') || '0', 10) / v.scale;
-  const y = v.oy + parseInt(q.get('y') || '0', 10) / v.scale;
+  let y = v.oy + parseInt(q.get('y') || '0', 10) / v.scale;
+  // Page mode: a tap on a pinned bar (header, comment box) goes to the bar.
+  if (q.get('m') === 'p' && s.mode === 'mob' && q.has('y')) {
+    const py = await page.evaluate(([px, ty, vh]) => (window.__fbc ? window.__fbc.pinnedAt(px, ty, vh) : null),
+      [x, parseInt(q.get('y'), 10) / v.scale, viewHeightCss(v)]).catch(() => null);
+    if (typeof py === 'number') y = py;
+  }
   const out = {};
   switch (op) {
     case 'click':

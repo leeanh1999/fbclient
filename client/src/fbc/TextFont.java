@@ -46,9 +46,9 @@ final class TextFont {
         this.em = em;
     }
 
-    /** Loads /fonts/<r|b><size>; null if missing or broken. */
-    static TextFont load(int size, boolean bold) {
-        String name = "/fonts/" + (bold ? "b" : "r") + size;
+    /** Loads /fonts/<r|b>[s]<size> (s: sharp, 1-bit); null if missing or broken. */
+    static TextFont load(int size, boolean bold, boolean sharp) {
+        String name = "/fonts/" + (bold ? "b" : "r") + (sharp ? "s" : "") + size;
         InputStream in = null;
         try {
             TextFont t = new TextFont(size);

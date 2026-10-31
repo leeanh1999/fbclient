@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Builds the phone's bitmap fonts (client/res/fonts/) from Roboto.
+"""Builds the phone's bitmap fonts (client/res/fonts/): smooth (antialiased
+Roboto) and sharp (1-bit, hinted DejaVu Sans, crisp like phone fonts).
 
 Phone system fonts are few (3 sizes) and often too big and wide for the
 page's layout, so page text is drawn with these instead. Per size and
 style: <style><size>.png, an atlas of antialiased glyphs (black, alpha),
-and <style><size>.bin, big-endian:
+and <style><size>.bin, big-endian (sharp, 1-bit set: <style>s<size>):
   u8 version (2), u8 cell height, u8 baseline (from the cell top),
   u8 ascent, u8 descent (the font's normal line, without stacked accents),
   u16 count,
@@ -24,6 +25,9 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, '..', 'res', 'fonts')
 STYLES = {'r': 'Roboto-Regular.ttf', 'b': 'Roboto-Bold.ttf'}
+# Sharp set: DejaVu's hinting keeps 1-bit glyphs even at small sizes
+# (Roboto's comes out uneven and spaced out).
+SHARP_STYLES = {'r': 'DejaVuSans.ttf', 'b': 'DejaVuSans-Bold.ttf'}
 # Em sizes in px. TextFrame picks by these numbers, keep them in sync.
 SIZES = [9, 10, 11, 12, 13, 14, 16, 18]
 ATLAS_W = 512
@@ -39,12 +43,14 @@ def charset():
     return sorted(cs)
 
 
-def build(style, size):
-    font = ImageFont.truetype(os.path.join(HERE, 'fonts', STYLES[style]), size)
+def build(style, size, sharp):
+    # Sharp: hinted 1-bit glyphs (Nokia S60 screens); smooth: antialiased.
+    mode = '1' if sharp else 'L'
+    font = ImageFont.truetype(os.path.join(HERE, 'fonts', (SHARP_STYLES if sharp else STYLES)[style]), size)
     chars = []
     for c in charset():
         ch = chr(c)
-        if c != 0x20 and font.getmask(ch).getbbox() is None and c not in (0xA0,):
+        if c != 0x20 and font.getmask(ch, mode).getbbox() is None and c not in (0xA0,):
             continue  # not in the font
         chars.append(c)
     # Vertical extent over all glyphs (stacked Vietnamese accents go above
@@ -53,7 +59,7 @@ def build(style, size):
     top, bottom = -asc, desc
     boxes = {}
     for c in chars:
-        l, t, r, b = font.getbbox(chr(c), anchor='ls')
+        l, t, r, b = font.getbbox(chr(c), mode=mode, anchor='ls')
         boxes[c] = (l, r)
         if r > l:
             top = min(top, t)
@@ -69,24 +75,26 @@ def build(style, size):
         if x + w > ATLAS_W:
             x = 0
             y += h
-        places.append((c, x, y, w, l, round(font.getlength(chr(c)) * 8)))
+        places.append((c, x, y, w, l, round(font.getlength(chr(c), mode=mode) * 8)))
         x += w
     mask = Image.new('L', (ATLAS_W, y + h), 0)
     d = ImageDraw.Draw(mask)
+    d.fontmode = mode
     for c, gx, gy, w, l, adv in places:
         if w:
             d.text((gx - l, gy + base), chr(c), font=font, fill=255, anchor='ls')
     # 16 alpha levels in a palette PNG (black, tRNS): a fraction of the
     # size of 8-bit RGBA, and phones only need the alpha.
-    img = mask.point(lambda v: (v * 15 + 127) // 255)
-    img.putpalette([0, 0, 0] * 16)
-    img.info['transparency'] = bytes((a * 255 + 7) // 15 for a in range(16))
+    levels = 2 if sharp else 16
+    img = mask.point(lambda v: (v * (levels - 1) + 127) // 255)
+    img.putpalette([0, 0, 0] * levels)
+    img.info['transparency'] = bytes((a * 255 + (levels - 1) // 2) // (levels - 1) for a in range(levels))
     # Trim unused width of a single-row atlas.
     used = mask.getbbox()
     if used and y == 0:
         img = img.crop((0, 0, max(1, used[2]), h))
-    name = '%s%d' % (style, size)
-    img.save(os.path.join(OUT, name + '.png'), optimize=True, bits=4,
+    name = '%s%s%d' % (style, 's' if sharp else '', size)
+    img.save(os.path.join(OUT, name + '.png'), optimize=True, bits=1 if sharp else 4,
              transparency=img.info['transparency'])
     with open(os.path.join(OUT, name + '.bin'), 'wb') as f:
         f.write(struct.pack('>BBBBBH', 2, h, base, asc, desc, len(places)))
@@ -99,9 +107,10 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     for f in os.listdir(OUT):
         os.remove(os.path.join(OUT, f))
-    for style in STYLES:
-        for size in SIZES:
-            print('%s: line %d, baseline %d, %d glyphs' % build(style, size))
+    for sharp in (False, True):
+        for style in STYLES:
+            for size in SIZES:
+                print('%s: line %d, baseline %d, %d glyphs' % build(style, size, sharp))
 
 
 if __name__ == '__main__':

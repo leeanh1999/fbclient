@@ -21,7 +21,10 @@ final class TextFrame {
     // SIZES), [style][size], loaded on first use. All text the app draws
     // uses them; phone fonts only stand in if the jar lacks one.
     private static final int[] BMP_SIZES = {9, 10, 11, 12, 13, 14, 16, 18};
-    private static final TextFont[][] BMP = new TextFont[2][BMP_SIZES.length];
+    // [sharp][style][size]
+    private static final TextFont[][][] BMP = new TextFont[2][2][BMP_SIZES.length];
+    // Sharp (1-bit, hinted) glyphs instead of smooth (antialiased) ones.
+    private static boolean sharp;
     private static TextFont[] broken;
 
     // Text size setting. Page text can't just be drawn bigger (it would run
@@ -55,6 +58,13 @@ final class TextFrame {
     /** Zoom the page is laid out at: the setting, raised for Large text. */
     static int pageZoom() {
         return zoom * ZOOM_PCT[textFont] / 100;
+    }
+
+    static void setSharp(boolean v) {
+        if (v != sharp) {
+            sharp = v;
+            gen++;
+        }
     }
 
     static void setTextFont(int v) {
@@ -150,9 +160,9 @@ final class TextFrame {
     /** Bitmap font i (BMP_SIZES); a phone font only if the jar lacks it. */
     private static TextFont fontAt(int i, boolean bold) {
         int style = bold ? 1 : 0;
-        TextFont t = BMP[style][i];
+        TextFont t = BMP[sharp ? 1 : 0][style][i];
         if (t == null) {
-            t = TextFont.load(BMP_SIZES[i], bold);
+            t = TextFont.load(BMP_SIZES[i], bold, sharp);
             if (t == null) {
                 if (broken == null) {
                     broken = new TextFont[2];
@@ -164,7 +174,7 @@ final class TextFrame {
                     broken[style] = t;
                 }
             }
-            BMP[style][i] = t;
+            BMP[sharp ? 1 : 0][style][i] = t;
         }
         return t;
     }

@@ -65,8 +65,9 @@ unchanged or 6 s pass) · `TextFrame` (text mode: draws the server's text lines 
 fonts over a text-free screenshot) · `PageView` (page mode: parses and paints drawing commands,
 scrolled locally) · `ImageLoader` (page mode images from `/img`, own thread, cached by key) · `FocusRing` (D-pad
 outline) · `VideoView` (native MMAPI player)
-· `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (page text: Roboto bitmap fonts in
-`client/res/fonts/`, tinted per colour; or phone fonts, Settings > Text). Regenerate the fonts with
+· `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: Roboto bitmap
+fonts in `client/res/fonts/`, smooth and sharp 1-bit sets (`r`/`b` + `s`), tinted per colour and
+blended with the known background; Settings > Text size / Font). Regenerate the fonts with
 `python client/tools/mkfont.py` (Pillow) and keep its `SIZES` in sync with `TextFrame.BMP_SIZES`.
 
 ## Server architecture (`server/server.js`)

@@ -59,8 +59,8 @@ public class FbMidlet extends MIDlet
     // slow phones by Net); 5: half resolution persisted (boolean);
     // 6: resolution level persisted (int); 7: phone text size (int, dropped);
     // 8: text font persisted (int: page size, smaller, much smaller);
-    // 9: text size as Large / Default / Small.
-    private static final int SETTINGS_VERSION = 9;
+    // 9: text size as Large / Default / Small; 10: sharp font (boolean).
+    private static final int SETTINGS_VERSION = 10;
     // Extra page rendered above and below the view (% of view height) so
     // scrolling shows real content immediately instead of blank space.
     // Net lowers it if the phone runs out of memory decoding tall frames.
@@ -85,8 +85,11 @@ public class FbMidlet extends MIDlet
 
     private Form settingsForm;
     private TextField tfServer, tfKey, tfZoom, tfQuality;
-    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize;
+    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize, cgFont;
     int textFont = TextFrame.SIZE_DEFAULT;
+    // Sharp (1-bit) font; default set in loadSettings: sharp on Nokia,
+    // smooth on BlackBerry (its screen blends antialiased text well).
+    boolean sharpFont;
     private FormButton btnSave;
     private TextBox textBox;
     // BlackBerry text input: a Form with one field and a Send button, since
@@ -109,6 +112,9 @@ public class FbMidlet extends MIDlet
     // BlackBerry input form: Escape (BACK) sends, as Escape saves Settings.
     private final Command cmdSendBack = new Command("Send", Command.BACK, 1);
     private final Command cmdCancelScreen = new Command("Cancel", Command.SCREEN, 2);
+    // BlackBerry: the Escape (back) key on the page canvas arrives as this
+    // command, not as a key press.
+    private final Command cmdPageBack = new Command("Back", Command.BACK, 1);
 
     // Record layout changed when the server field was removed; new store name
     // avoids misreading old records.
@@ -133,6 +139,10 @@ public class FbMidlet extends MIDlet
                 && (platform.startsWith("RIM") || platform.indexOf("BlackBerry") >= 0);
         loadSettings();
         canvas = new BrowserCanvas(this);
+        if (blackberry) {
+            canvas.addCommand(cmdPageBack);
+            canvas.setCommandListener(this);
+        }
         net = new Net(this);
         loader = new ImageLoader(this);
         net.start();
@@ -444,6 +454,9 @@ public class FbMidlet extends MIDlet
         cgTextSize = new ChoiceGroup("Text size", Choice.EXCLUSIVE, TextFrame.SIZE_NAMES, null);
         cgTextSize.setSelectedIndex(textFont, true);
         settingsForm.append(cgTextSize);
+        cgFont = new ChoiceGroup("Font", Choice.EXCLUSIVE, new String[] {"Sharp", "Smooth"}, null);
+        cgFont.setSelectedIndex(sharpFont ? 0 : 1, true);
+        settingsForm.append(cgFont);
         if (blackberry) {
             // BlackBerry ignores a StringItem button's default command.
             btnSave = new FormButton(this, "Save");
@@ -488,6 +501,8 @@ public class FbMidlet extends MIDlet
             res = cgRes.getSelectedIndex();
             textFont = cgTextSize.getSelectedIndex();
             TextFrame.setTextFont(textFont);
+            sharpFont = cgFont.getSelectedIndex() == 0;
+            TextFrame.setSharp(sharpFont);
             TextFrame.setZoom(zoom);
             saveSettings();
             canvas.toast(!server.equals(oldServer) || bbConn != oldConn
@@ -518,6 +533,12 @@ public class FbMidlet extends MIDlet
     // ---- CommandListener ----
 
     public void commandAction(Command c, Displayable d) {
+        if (d == canvas) {
+            if (c == cmdPageBack) {
+                canvas.backPressed();
+            }
+            return;
+        }
         if (d == textBox || d == inputForm) {
             if (c == cmdOk || c == cmdSendBack) {
                 textSubmitted();
@@ -557,6 +578,7 @@ public class FbMidlet extends MIDlet
     // ---- Persistence ----
 
     private void loadSettings() {
+        sharpFont = !blackberry;
         RecordStore rs = null;
         try {
             rs = RecordStore.openRecordStore(STORE, true);
@@ -600,6 +622,9 @@ public class FbMidlet extends MIDlet
                 } else if (version >= 9) {
                     textFont = clamp(in.readInt(), TextFrame.SIZE_LARGE, TextFrame.SIZE_SMALL);
                 }
+                if (version >= 10) {
+                    sharpFont = in.readBoolean();
+                }
                 if (version < 1) {
                     // Old builds defaulted to 75% zoom / quality 50.
                     zoom = DEFAULT_ZOOM;
@@ -616,6 +641,7 @@ public class FbMidlet extends MIDlet
         }
         TextFrame.setTextFont(textFont);
         TextFrame.setZoom(zoom);
+        TextFrame.setSharp(sharpFont);
         if (clientId.length() == 0) {
             clientId = randomId();
             saveSettings();
@@ -641,6 +667,7 @@ public class FbMidlet extends MIDlet
             out.writeBoolean(frameAuto);
             out.writeInt(res);
             out.writeInt(textFont);
+            out.writeBoolean(sharpFont);
             byte[] b = bos.toByteArray();
             rs = RecordStore.openRecordStore(STORE, true);
             if (rs.getNumRecords() > 0) {

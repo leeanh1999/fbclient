@@ -107,9 +107,15 @@ class BrowserCanvas extends Canvas implements Runnable {
     // width, so sideways drags would just reveal blank bands.
     private int px0, py0, dragY;
     private long pressAt;
-    private int lastY;
+    // Recent finger positions (y, time) for the flick speed, a ring. Touch
+    // events often come in bursts a millisecond apart, so the speed is
+    // taken over the last ~150 ms, not between two events.
+    private static final int SAMPLES = 8;
+    private final int[] sampY = new int[SAMPLES];
+    private final long[] sampT = new long[SAMPLES];
+    private int sampN;
     private long lastT;
-    private int velY; // px per 100 ms
+    private long lastBackAt;
     private int tapX, tapY;
     private long tapUntil;
 
@@ -177,6 +183,8 @@ class BrowserCanvas extends Canvas implements Runnable {
             } else {
                 pageSy += sy - sentSy;
                 pageTarget += sy - sentSy;
+                // A drag in progress keeps following the finger from there.
+                pressSy += sy - sentSy;
             }
             page = p;
             image = null;
@@ -753,7 +761,7 @@ class BrowserCanvas extends Canvas implements Runnable {
             return;
         }
         if (isRightSoft(k) || k == KEY_POUND || k == KEY_NUM1 || k == KEY_ESC || k == KEY_BACKSPACE) {
-            app.net.action("op=back");
+            backPressed();
             return;
         }
         int h = viewHeight();
@@ -796,6 +804,25 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
     }
 
+    /**
+     * Back key or (BlackBerry) the BACK command: closes the menu, else goes
+     * to the previous page. Phones that send both for one press only go
+     * back once.
+     */
+    void backPressed() {
+        long now = System.currentTimeMillis();
+        if (now - lastBackAt < 400) {
+            return;
+        }
+        lastBackAt = now;
+        if (menu.open) {
+            closeMenu();
+            return;
+        }
+        clearOffer();
+        app.net.action("op=back");
+    }
+
     protected void keyReleased(int k) {
         holdDir = 0;
     }
@@ -822,9 +849,10 @@ class BrowserCanvas extends Canvas implements Runnable {
         longFired = false;
         pressOnBar = y >= viewHeight();
         px0 = x;
-        py0 = lastY = y;
-        pressAt = lastT = System.currentTimeMillis();
-        velY = 0;
+        py0 = y;
+        pressAt = System.currentTimeMillis();
+        sampN = 0;
+        addSample(y, pressAt);
         synchronized (this) {
             pressSy = pageTarget = pageSy; // a touch stops a flick
         }
@@ -841,16 +869,14 @@ class BrowserCanvas extends Canvas implements Runnable {
         if (!dragging && (Math.abs(x - px0) > DRAG_SLOP || Math.abs(y - py0) > DRAG_SLOP)) {
             dragging = true;
             clearOffer();
+            // Follow the finger from here, without first jumping by the slop.
+            py0 = y;
+            synchronized (this) {
+                pressSy = pageSy;
+            }
         }
         if (dragging) {
-            long now = System.currentTimeMillis();
-            long dt = now - lastT;
-            if (dt > 0) {
-                // Smoothed velocity for flick scrolling.
-                velY = (velY + (int) ((y - lastY) * 100 / dt)) / 2;
-            }
-            lastY = y;
-            lastT = now;
+            addSample(y, System.currentTimeMillis());
             PageView p = page;
             if (p != null) {
                 // Page mode: the whole stretch is here, just move the view.
@@ -874,6 +900,46 @@ class BrowserCanvas extends Canvas implements Runnable {
             }
             repaint();
         }
+    }
+
+    private void addSample(int y, long t) {
+        int i = sampN % SAMPLES;
+        sampY[i] = y;
+        sampT[i] = t;
+        sampN++;
+        lastT = t;
+    }
+
+    /**
+     * Scroll to add after the finger left at time now (px, + = down the
+     * page): from its speed over the last ~150 ms, none if it had stopped
+     * or moved slowly, at most two views.
+     */
+    private int flickDistance(long now) {
+        if (sampN < 2 || now - lastT > 100) {
+            return 0;
+        }
+        int last = (sampN - 1) % SAMPLES;
+        int first = last;
+        int n = Math.min(sampN, SAMPLES);
+        for (int k = 1; k < n; k++) {
+            int j = (last - k + SAMPLES) % SAMPLES;
+            if (sampT[last] - sampT[j] > 150) {
+                break;
+            }
+            first = j;
+        }
+        if (first == last) {
+            return 0;
+        }
+        // At least 40 ms, so a burst of events can't make a huge speed.
+        long dt = Math.max(40, sampT[last] - sampT[first]);
+        int v = (int) ((sampY[last] - sampY[first]) * 100 / dt); // px per 100 ms
+        if (Math.abs(v) < 20) {
+            return 0;
+        }
+        int max = 2 * viewHeight();
+        return FbMidlet.clamp(-v * 3, -max, max);
     }
 
     /** Turn the finger offset into a scroll request without a visual jump. */
@@ -916,7 +982,7 @@ class BrowserCanvas extends Canvas implements Runnable {
         if (dragging) {
             dragging = false;
             // Flick: keep going in the drag direction if released fast.
-            int flick = System.currentTimeMillis() - lastT < 120 ? -velY * 4 : 0;
+            int flick = flickDistance(System.currentTimeMillis());
             if (page != null) {
                 pageScrollBy(flick);
             } else {
