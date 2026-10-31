@@ -5,4 +5,7 @@ public final class Font {
     public static Font getFont(int f, int s, int z) { return null; }
     public int stringWidth(String s) { return 0; }
     public int getHeight() { return 0; }
+    public static Font getDefaultFont() { return null; }
+    public int getBaselinePosition() { return 0; }
+    public int charWidth(char c) { return 0; }
 }

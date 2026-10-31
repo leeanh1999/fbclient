@@ -1,7 +1,6 @@
 package fbc;
 
 import javax.microedition.lcdui.Canvas;
-import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.media.Manager;
 import javax.microedition.media.Player;
@@ -40,7 +39,9 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
 
     private final FbMidlet app;
     private final String videoKey;
-    private final Font font = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+    private static TextFont font() {
+        return TextFrame.ui(TextFrame.UI_SIZE, false);
+    }
     private final int barH;
 
     private volatile boolean closed;
@@ -63,7 +64,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         this.app = app;
         this.videoKey = videoKey;
         setFullScreenMode(true);
-        barH = Math.max(font.getHeight() + 26, 52);
+        barH = Math.max(font().height() + 26, 52);
         new Thread(this).start();
     }
 
@@ -226,11 +227,10 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         int vb = bottom();
         g.setColor(0x000000);
         g.fillRect(0, 0, w, vb);
-        g.setFont(font);
         String s = status;
         if (s != null) {
-            g.setColor(0xFFFFFF);
-            g.drawString(s, w / 2, vb / 2, Graphics.BASELINE | Graphics.HCENTER);
+            font().draw(g, font().shorten(s, w - 8), w / 2, vb / 2, 0xFFFFFF, 0x000000,
+                    Graphics.BASELINE | Graphics.HCENTER);
         }
         if (!barShown) {
             return;

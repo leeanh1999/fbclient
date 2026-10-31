@@ -3,7 +3,6 @@ package fbc;
 import java.util.Hashtable;
 import java.util.Vector;
 
-import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
 
@@ -51,8 +50,14 @@ final class PageView {
     final char[] type;
     final int[] x, y, w, h, s, flags, color;
     final String[] str;
-    // Text widths in the phone font, measured on first paint.
-    private final int[] tw;
+    // Text fonts, widths in them, and the text as last drawn (cut to its
+    // box) at drawnX, set on first paint.
+    private final TextFont[] fnt;
+    private final int[] tw, drawnX;
+    // Colour under each text item (-1: not one colour), for TextFont.
+    private final int[] tbg;
+    private final String[] drawn;
+    private int fontGen = TextFrame.gen;
 
     private PageView(int[] r, int bg, int n) {
         top = r[0];
@@ -74,6 +79,10 @@ final class PageView {
         color = new int[n];
         str = new String[n];
         tw = new int[n];
+        tbg = new int[n];
+        fnt = new TextFont[n];
+        drawnX = new int[n];
+        drawn = new String[n];
     }
 
     /**
@@ -128,7 +137,6 @@ final class PageView {
                 } else if (t != CLIP && t != FOCUS) {
                     t = 0;
                 }
-                p.tw[k] = -1;
                 if (t != 0) {
                     k++;
                 }
@@ -136,6 +144,7 @@ final class PageView {
             start = end + 1;
         }
         if (k == count) {
+            p.findBackgrounds();
             return p;
         }
         // Some lines were malformed: copy into exact-size arrays.
@@ -149,8 +158,35 @@ final class PageView {
         System.arraycopy(p.flags, 0, q.flags, 0, k);
         System.arraycopy(p.color, 0, q.color, 0, k);
         System.arraycopy(p.str, 0, q.str, 0, k);
-        System.arraycopy(p.tw, 0, q.tw, 0, k);
+        q.findBackgrounds();
         return q;
+    }
+
+    /**
+     * The colour under each text item: the nearest box before it in its
+     * layer that covers its centre, -1 if an image does (or nothing does
+     * in the pinned top layer), else the page's background.
+     */
+    private void findBackgrounds() {
+        for (int i = 0; i < n; i++) {
+            if (type[i] != TEXT) {
+                continue;
+            }
+            int cx = x[i] + w[i] / 2;
+            int cy = y[i] + h[i] / 2;
+            int layer = flags[i] & PINNED;
+            int b = layer == FIXED ? -1 : bg;
+            for (int j = i - 1, stop = Math.max(0, i - 400); j >= stop; j--) {
+                char t = type[j];
+                if ((t != BOX && t != IMAGE) || (flags[j] & PINNED) != layer
+                        || cx < x[j] || cx >= x[j] + w[j] || cy < y[j] || cy >= y[j] + h[j]) {
+                    continue;
+                }
+                b = t == BOX ? color[j] : -1;
+                break;
+            }
+            tbg[i] = b;
+        }
     }
 
     /** Splits a line at tabs into out (up to its length); returns the field count. */
@@ -203,6 +239,13 @@ final class PageView {
      */
     private void paintPass(Graphics g, int oy, int bx, int by, int bw, int bh, Hashtable images, int layer) {
         int vh = by + bh;
+        if (fontGen != TextFrame.gen) {
+            // Text size setting changed: fit the fonts again.
+            fontGen = TextFrame.gen;
+            for (int i = 0; i < n; i++) {
+                fnt[i] = null;
+            }
+        }
         // Current clip (view coordinates).
         int cx = bx;
         int cy = by;
@@ -213,6 +256,7 @@ final class PageView {
         // another on the same line starts after it instead of overlapping.
         int lastY = -1000;
         int lastRight = 0;
+        int lastBoxRight = 0;
         for (int i = 0; i < n; i++) {
             if ((flags[i] & PINNED) != layer) {
                 continue;
@@ -258,29 +302,48 @@ final class PageView {
                     g.fillRect(x[i], yy, w[i], h[i]);
                 }
             } else if (t == TEXT) {
-                Font font = TextFrame.font(s[i], (flags[i] & BOLD) != 0);
-                if (tw[i] < 0) {
-                    tw[i] = font.stringWidth(str[i]);
-                }
                 int f = flags[i];
-                int tx = x[i];
-                int ty = (f & TOP) != 0 ? yy : yy + (h[i] - font.getHeight()) / 2;
-                if ((f & CENTER) != 0) {
-                    tx += (w[i] - tw[i]) / 2;
-                } else if ((f & CLIP_BOX) == 0 && Math.abs(ty - lastY) < 3 && tx < lastRight) {
-                    tx = lastRight;
+                boolean bold = (f & BOLD) != 0;
+                if (fnt[i] == null) {
+                    fnt[i] = (f & CLIP_BOX) != 0 ? TextFrame.font(s[i], bold)
+                            : TextFrame.fit(s[i], bold, str[i], w[i], h[i]);
+                    tw[i] = fnt[i].stringWidth(str[i]);
+                    drawnX[i] = Integer.MIN_VALUE;
                 }
-                g.setColor(color[i]);
-                g.setFont(font);
+                TextFont font = fnt[i];
+                int tx = x[i];
+                int ty = font.top(yy, h[i], (f & TOP) != 0);
+                int boxRight = x[i] + w[i];
+                String text = str[i];
+                int textW = tw[i];
+                if ((f & CLIP_BOX) == 0) {
+                    if ((f & CENTER) != 0) {
+                        tx += (w[i] - tw[i]) / 2;
+                    } else if (Math.abs(ty - lastY) < 3) {
+                        tx = TextFrame.after(tx, lastRight, lastBoxRight, font);
+                    }
+                    int max = boxRight + TextFrame.slack(w[i]) - tx;
+                    if (textW > max) {
+                        // Still too wide in the smallest font: cut, so it
+                        // doesn't run into icons or the next run.
+                        if (drawnX[i] != tx) {
+                            drawn[i] = TextFrame.clip(text, font, max);
+                            drawnX[i] = tx;
+                        }
+                        text = drawn[i];
+                        textW = font.stringWidth(text);
+                    }
+                }
                 if ((f & CLIP_BOX) != 0) {
                     g.clipRect(x[i], yy, w[i], h[i]);
                 }
-                g.drawString(str[i], tx, ty, Graphics.TOP | Graphics.LEFT);
+                font.drawTop(g, text, tx, ty, color[i], tbg[i]);
                 if ((f & CLIP_BOX) != 0) {
                     g.setClip(cx, cy, Math.max(0, cw), Math.max(0, ch));
                 } else {
                     lastY = ty;
-                    lastRight = tx + tw[i];
+                    lastRight = tx + textW;
+                    lastBoxRight = boxRight;
                 }
             }
         }

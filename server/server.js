@@ -1452,7 +1452,7 @@ const HIDE_TEXT_CSS = '*, ::placeholder { -webkit-text-fill-color: transparent !
 function encodeText(lines, scale) {
   return lines.map((l) => {
     const n = l.slice(0, 5).map((v) => Math.round(v * scale));
-    return [...n, l[5], l[6].toString(16), String(l[7]).replace(/[\t\r\n]/g, ' ')].join('\t');
+    return [...n, l[5], l[6].toString(16), String(l[7]).normalize('NFC').replace(/[\t\r\n]/g, ' ')].join('\t');
   }).join('\n');
 }
 
@@ -1461,7 +1461,9 @@ function encodeText(lines, scale) {
 function encodePage(lines, scale) {
   return lines.map((l) => l.map((f, i) => {
     if (i >= 1 && i <= 5) return Math.round(f * scale);
-    return typeof f === 'string' ? f.replace(/[\t\r\n]/g, ' ') : f;
+    // NFC: the phone's bitmap fonts have precomposed Vietnamese letters,
+    // not combining accents.
+    return typeof f === 'string' ? f.normalize('NFC').replace(/[\t\r\n]/g, ' ') : f;
   }).join('\t')).join('\n');
 }
 

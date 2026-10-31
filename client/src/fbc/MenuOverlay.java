@@ -1,6 +1,5 @@
 package fbc;
 
-import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Graphics;
 
 /**
@@ -110,7 +109,7 @@ class MenuOverlay {
         return i >= 0 && i < items.length ? items[i] : -1;
     }
 
-    private void layout(int w, int vh, Font font) {
+    private void layout(int w, int vh, TextFont font) {
         // As many columns as the widest label allows: BlackBerry's system
         // font is much wider than S60's at the same screen width.
         int widest = 0;
@@ -120,7 +119,7 @@ class MenuOverlay {
         cols = Math.max(3, Math.min(5, w / (widest + 16)));
         rows = (items.length + cols - 1) / cols;
         tileW = w / cols;
-        int fh = font.getHeight();
+        int fh = font.height();
         // Icon in proportion to the text (about twice its height), then
         // shrunk only if the rows would not fit in 85% of the view.
         iconD = Math.max(28, Math.min(72, Math.min(fh * 2, tileW - 16)));
@@ -130,7 +129,7 @@ class MenuOverlay {
         panelY = vh - HEADER_H - rows * tileH - 8;
     }
 
-    void paint(Graphics g, int w, int vh, Font font, boolean showSel, String url) {
+    void paint(Graphics g, int w, int vh, TextFont font, boolean showSel, String url) {
         layout(w, vh, font);
         dimPage(g, w, vh);
 
@@ -140,13 +139,10 @@ class MenuOverlay {
         // Grab handle + title + current page.
         g.setColor(0xCED0D4);
         g.fillRoundRect(w / 2 - 18, top + 6, 36, 4, 4, 4);
-        g.setFont(font);
-        g.setColor(C_TEXT);
-        g.drawString("Menu", 12, top + 12, Graphics.TOP | Graphics.LEFT);
+        font.draw(g, "Menu", 12, top + 12, C_TEXT, C_PANEL, Graphics.TOP | Graphics.LEFT);
         if (url != null && url.length() > 0) {
-            g.setColor(C_SUB);
-            g.drawString(shorten(url, font, w - font.stringWidth("Menu") - 36),
-                    w - 12, top + 12, Graphics.TOP | Graphics.RIGHT);
+            font.draw(g, font.shorten(url, w - font.stringWidth("Menu") - 36),
+                    w - 12, top + 12, C_SUB, C_PANEL, Graphics.TOP | Graphics.RIGHT);
         }
 
         int d = iconD;
@@ -164,8 +160,8 @@ class MenuOverlay {
             Icons.drawSmooth(g, Icons.CIRCLE, cx, cy, d, circle, circle);
             int fg = a == MESSENGER ? C_BLUE : (a == EXIT ? 0xE41E3F : C_TEXT);
             Icons.drawSmooth(g, ICON[a], cx, cy, d * 11 / 20, fg, circle);
-            g.setColor(showSel && i == sel ? C_BLUE : C_TEXT);
-            g.drawString(shorten(LABELS[a], font, tileW - 4), cx, cy + d / 2 + 4,
+            font.draw(g, font.shorten(LABELS[a], tileW - 4), cx, cy + d / 2 + 4,
+                    showSel && i == sel ? C_BLUE : C_TEXT, showSel && i == sel ? C_SEL : C_PANEL,
                     Graphics.TOP | Graphics.HCENTER);
         }
     }
@@ -189,14 +185,4 @@ class MenuOverlay {
         }
     }
 
-    private static String shorten(String s, Font f, int maxW) {
-        if (f.stringWidth(s) <= maxW) {
-            return s;
-        }
-        int n = s.length();
-        while (n > 1 && f.stringWidth(s.substring(0, n) + "..") > maxW) {
-            n--;
-        }
-        return s.substring(0, n) + "..";
-    }
 }

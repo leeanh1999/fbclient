@@ -57,8 +57,10 @@ public class FbMidlet extends MIDlet
     // 1: zoom/quality defaults changed; 2: live persisted (now unused); 3: server and
     // BlackBerry connection persisted; 4: overscan persisted (lowered on
     // slow phones by Net); 5: half resolution persisted (boolean);
-    // 6: resolution level persisted (int).
-    private static final int SETTINGS_VERSION = 6;
+    // 6: resolution level persisted (int); 7: phone text size (int, dropped);
+    // 8: text font persisted (int: page size, smaller, much smaller);
+    // 9: text size as Large / Default / Small.
+    private static final int SETTINGS_VERSION = 9;
     // Extra page rendered above and below the view (% of view height) so
     // scrolling shows real content immediately instead of blank space.
     // Net lowers it if the phone runs out of memory decoding tall frames.
@@ -83,7 +85,8 @@ public class FbMidlet extends MIDlet
 
     private Form settingsForm;
     private TextField tfServer, tfKey, tfZoom, tfQuality;
-    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes;
+    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize;
+    int textFont = TextFrame.SIZE_DEFAULT;
     private FormButton btnSave;
     private TextBox textBox;
     // BlackBerry text input: a Form with one field and a Send button, since
@@ -438,6 +441,9 @@ public class FbMidlet extends MIDlet
                 new String[] {"Full (sharp)", "2/3 (balanced)", "Half (fastest)"}, null);
         cgRes.setSelectedIndex(res, true);
         settingsForm.append(cgRes);
+        cgTextSize = new ChoiceGroup("Text size", Choice.EXCLUSIVE, TextFrame.SIZE_NAMES, null);
+        cgTextSize.setSelectedIndex(textFont, true);
+        settingsForm.append(cgTextSize);
         if (blackberry) {
             // BlackBerry ignores a StringItem button's default command.
             btnSave = new FormButton(this, "Save");
@@ -480,6 +486,9 @@ public class FbMidlet extends MIDlet
                 frameAuto = false;
             }
             res = cgRes.getSelectedIndex();
+            textFont = cgTextSize.getSelectedIndex();
+            TextFrame.setTextFont(textFont);
+            TextFrame.setZoom(zoom);
             saveSettings();
             canvas.toast(!server.equals(oldServer) || bbConn != oldConn
                     ? "Saved, server: " + server : "Settings saved");
@@ -583,6 +592,14 @@ public class FbMidlet extends MIDlet
                 } else if (version >= 6) {
                     res = clamp(in.readInt(), RES_FULL, RES_HALF);
                 }
+                if (version == 7) {
+                    in.readInt(); // phone font size, replaced by textFont
+                } else if (version == 8) {
+                    // Page size -> Default; smaller, much smaller -> Small.
+                    textFont = in.readInt() == 0 ? TextFrame.SIZE_NORMAL : TextFrame.SIZE_SMALL;
+                } else if (version >= 9) {
+                    textFont = clamp(in.readInt(), TextFrame.SIZE_LARGE, TextFrame.SIZE_SMALL);
+                }
                 if (version < 1) {
                     // Old builds defaulted to 75% zoom / quality 50.
                     zoom = DEFAULT_ZOOM;
@@ -597,6 +614,8 @@ public class FbMidlet extends MIDlet
         } finally {
             closeStore(rs);
         }
+        TextFrame.setTextFont(textFont);
+        TextFrame.setZoom(zoom);
         if (clientId.length() == 0) {
             clientId = randomId();
             saveSettings();
@@ -621,6 +640,7 @@ public class FbMidlet extends MIDlet
             out.writeInt(overscan);
             out.writeBoolean(frameAuto);
             out.writeInt(res);
+            out.writeInt(textFont);
             byte[] b = bos.toByteArray();
             rs = RecordStore.openRecordStore(STORE, true);
             if (rs.getNumRecords() > 0) {

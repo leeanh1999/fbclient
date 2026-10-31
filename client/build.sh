@@ -48,7 +48,7 @@ Manifest-Version: 1.0
 MIDlet-Name: FbClient
 MIDlet-Vendor: fbclient
 MIDlet-Version: $VERSION
-MIDlet-1: FbClient, /icon.png, fbc.FbMidlet
+MIDlet-1: Facebook, /icon.png, fbc.FbMidlet
 MIDlet-Icon: /icon.png
 MicroEdition-Configuration: CLDC-1.1
 MicroEdition-Profile: MIDP-2.0

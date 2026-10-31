@@ -7,8 +7,8 @@ import javax.microedition.lcdui.Image;
 /**
  * Text mode: the server sends a screenshot taken without text plus the
  * page's text lines ("x y w h size flags rrggbb text", tab separated, one
- * per line, image px). They are drawn here with the phone's own fonts,
- * once per frame, so painting stays a plain drawImage.
+ * per line, image px). They are drawn here (TextFont), once per frame,
+ * so painting stays a plain drawImage. Picks fonts for page mode too.
  */
 final class TextFrame {
 
@@ -17,11 +17,51 @@ final class TextFrame {
     private static final int CENTER = 4;
     private static final int TOP = 8;
 
-    private static final int[] SIZES = {Font.SIZE_SMALL, Font.SIZE_MEDIUM, Font.SIZE_LARGE};
-    // [style][size], filled on first use.
-    private static final Font[][] FONTS = new Font[2][3];
+    // The app's fonts: bitmaps in the jar (em px, as tools/mkfont.py
+    // SIZES), [style][size], loaded on first use. All text the app draws
+    // uses them; phone fonts only stand in if the jar lacks one.
+    private static final int[] BMP_SIZES = {9, 10, 11, 12, 13, 14, 16, 18};
+    private static final TextFont[][] BMP = new TextFont[2][BMP_SIZES.length];
+    private static TextFont[] broken;
+
+    // Text size setting. Page text can't just be drawn bigger (it would run
+    // out of the boxes the page laid out), so Large lays the page out at
+    // 125% zoom; Small draws one font size down. gen changes with it, so
+    // cached fonts are redone.
+    static final int SIZE_LARGE = 0;
+    static final int SIZE_NORMAL = 1;
+    static final int SIZE_SMALL = 2;
+    static final int SIZE_DEFAULT = SIZE_NORMAL;
+    static final String[] SIZE_NAMES = {"Large", "Default", "Small"};
+    private static final int[] STEP_DOWN = {0, 0, 1};
+    private static final int[] ZOOM_PCT = {125, 100, 100};
+    private static int textFont = SIZE_DEFAULT;
+
+    // App text (menu, toasts, buttons, video status), em px at 100% zoom;
+    // grows with the page's zoom.
+    static final int UI_SIZE = 14;
+    static final int UI_BIG = 16;
+    private static int zoom = 100;
+    static int gen;
 
     private TextFrame() {
+    }
+
+    /** The zoom setting (Settings > Zoom %). */
+    static void setZoom(int z) {
+        zoom = z;
+    }
+
+    /** Zoom the page is laid out at: the setting, raised for Large text. */
+    static int pageZoom() {
+        return zoom * ZOOM_PCT[textFont] / 100;
+    }
+
+    static void setTextFont(int v) {
+        if (v != textFont) {
+            textFont = v;
+            gen++;
+        }
     }
 
     /** Draws the lines in text[off..off+len) over bg; returns a mutable image. */
@@ -40,6 +80,7 @@ final class TextFrame {
         // another on the same line starts after it instead of overlapping.
         int lastY = -1000;
         int lastRight = 0;
+        int lastBoxRight = 0;
         int start = 0;
         while (start < all.length()) {
             int end = all.indexOf('\n', start);
@@ -58,26 +99,33 @@ final class TextFrame {
                 } catch (Exception e) {
                     color = 0;
                 }
-                Font font = font(FbMidlet.parseInt(f[4], 14), (flags & BOLD) != 0);
                 String s = f[7];
+                TextFont font = (flags & CLIP) != 0 ? font(FbMidlet.parseInt(f[4], 14), (flags & BOLD) != 0)
+                        : fit(FbMidlet.parseInt(f[4], 14), (flags & BOLD) != 0, s, w, h);
                 int tw = font.stringWidth(s);
-                int ty = (flags & TOP) != 0 ? y : y + (h - font.getHeight()) / 2;
-                if ((flags & CENTER) != 0) {
-                    x += (w - tw) / 2;
-                } else if ((flags & CLIP) == 0 && Math.abs(ty - lastY) < 3 && x < lastRight) {
-                    x = lastRight;
+                int ty = font.top(y, h, (flags & TOP) != 0);
+                int boxRight = x + w;
+                if ((flags & CLIP) == 0) {
+                    if ((flags & CENTER) != 0) {
+                        x += (w - tw) / 2;
+                    } else if (Math.abs(ty - lastY) < 3) {
+                        x = after(x, lastRight, lastBoxRight, font);
+                    }
+                    if (x + tw > boxRight + slack(w)) {
+                        s = clip(s, font, boxRight + slack(w) - x);
+                        tw = font.stringWidth(s);
+                    }
                 }
-                g.setColor(color);
-                g.setFont(font);
                 if ((flags & CLIP) != 0) {
                     g.setClip(x, y, w, h);
                 }
-                g.drawString(s, x, ty, Graphics.TOP | Graphics.LEFT);
+                font.drawTop(g, s, x, ty, color, -1);
                 if ((flags & CLIP) != 0) {
                     g.setClip(0, 0, fullW, fullH);
                 } else {
                     lastY = ty;
                     lastRight = x + tw;
+                    lastBoxRight = boxRight;
                 }
             }
             start = end + 1;
@@ -99,25 +147,99 @@ final class TextFrame {
         return true;
     }
 
-    /** The phone font whose height is closest to the page's line of px size. */
-    static Font font(int px, boolean bold) {
+    /** Bitmap font i (BMP_SIZES); a phone font only if the jar lacks it. */
+    private static TextFont fontAt(int i, boolean bold) {
         int style = bold ? 1 : 0;
-        int want = px * 5 / 4; // CSS font-size -> line height incl. leading
-        Font best = null;
-        int bestDiff = Integer.MAX_VALUE;
-        for (int i = 0; i < SIZES.length; i++) {
-            Font f = FONTS[style][i];
-            if (f == null) {
-                f = Font.getFont(Font.FACE_PROPORTIONAL,
-                        bold ? Font.STYLE_BOLD : Font.STYLE_PLAIN, SIZES[i]);
-                FONTS[style][i] = f;
+        TextFont t = BMP[style][i];
+        if (t == null) {
+            t = TextFont.load(BMP_SIZES[i], bold);
+            if (t == null) {
+                if (broken == null) {
+                    broken = new TextFont[2];
+                }
+                t = broken[style];
+                if (t == null) {
+                    t = new TextFont(Font.getFont(Font.FACE_PROPORTIONAL,
+                            bold ? Font.STYLE_BOLD : Font.STYLE_PLAIN, Font.SIZE_SMALL));
+                    broken[style] = t;
+                }
             }
-            int d = Math.abs(f.getHeight() - want);
-            if (d < bestDiff) {
-                bestDiff = d;
-                best = f;
+            BMP[style][i] = t;
+        }
+        return t;
+    }
+
+    /** Index of the largest font of at most px. */
+    private static int index(int px) {
+        int best = 0;
+        for (int i = 0; i < BMP_SIZES.length; i++) {
+            if (BMP_SIZES[i] <= px) {
+                best = i;
             }
         }
         return best;
+    }
+
+    /** The font for the page's text of px size (with the setting's step down). */
+    static TextFont font(int px, boolean bold) {
+        return fontAt(Math.max(0, index(px) - STEP_DOWN[textFont]), bold);
+    }
+
+    /** The font for the app's own text of px size (UI_SIZE, UI_BIG). */
+    static TextFont ui(int px, boolean bold) {
+        return fontAt(index(px * pageZoom() / 100), bold);
+    }
+
+    /** How far text may run past the right of its box (phone px). */
+    static int slack(int w) {
+        return w / 16 + 2;
+    }
+
+    /**
+     * The font for text s laid out by the page in a w x h box: the size for
+     * the page's, or a smaller one while that is too wide or too tall for
+     * the box (fonts wider than the page's would run into icons and the
+     * next line).
+     */
+    static TextFont fit(int px, boolean bold, String s, int w, int h) {
+        int i = Math.max(0, index(px) - STEP_DOWN[textFont]);
+        TextFont f = fontAt(i, bold);
+        while (i > 0 && (f.stringWidth(s) > w || f.height() > h + 3)) {
+            f = fontAt(--i, bold);
+        }
+        return f;
+    }
+
+    /** s cut to at most max px wide in font f, with "..." when cut. */
+    static String clip(String s, TextFont f, int max) {
+        if (f.stringWidth(s) <= max) {
+            return s;
+        }
+        int dots = f.stringWidth("...");
+        if (max <= dots) {
+            return "";
+        }
+        int lo = 0;
+        int hi = s.length();
+        while (lo < hi) {
+            int mid = (lo + hi + 1) / 2;
+            if (f.stringWidth(s.substring(0, mid)) + dots <= max) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return s.substring(0, lo).trim() + "...";
+    }
+
+    /**
+     * Left of a run at x on the same line as the previous run, which was
+     * drawn up to lastRight and laid out by the page up to lastBoxRight:
+     * after it (phone fonts are wider), with a space when the page had a
+     * gap between the two ("Name" + "shared" from two text nodes).
+     */
+    static int after(int x, int lastRight, int lastBoxRight, TextFont f) {
+        int min = x > lastBoxRight + 1 ? lastRight + f.stringWidth(" ") : lastRight;
+        return x < min ? min : x;
     }
 }

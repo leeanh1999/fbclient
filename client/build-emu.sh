@@ -38,7 +38,7 @@ Manifest-Version: 1.0
 MIDlet-Name: FbClient
 MIDlet-Vendor: fbclient
 MIDlet-Version: 1.0.0
-MIDlet-1: FbClient, /icon.png, fbc.FbMidlet
+MIDlet-1: Facebook, /icon.png, fbc.FbMidlet
 MIDlet-Icon: /icon.png
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
@@ -57,7 +57,7 @@ cat > "$OUT/FbClient.jad" <<EOF
 MIDlet-Name: FbClient
 MIDlet-Vendor: fbclient
 MIDlet-Version: 1.0.0
-MIDlet-1: FbClient, /icon.png, fbc.FbMidlet
+MIDlet-1: Facebook, /icon.png, fbc.FbMidlet
 MIDlet-Icon: /icon.png
 MIDlet-Jar-URL: FbClient.jar
 MIDlet-Jar-Size: $SIZE

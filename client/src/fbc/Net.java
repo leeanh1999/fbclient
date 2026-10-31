@@ -186,7 +186,7 @@ class Net implements Runnable {
         sb.append("&h=").append(c.viewHeight());
         sb.append("&ov=").append(app.overscan);
         sb.append(app.resParam());
-        sb.append("&z=").append(app.zoom);
+        sb.append("&z=").append(TextFrame.pageZoom());
         sb.append("&f=").append(app.png ? "png" : "jpg");
         sb.append("&q=").append(app.quality);
         // Page mode: the page as drawing commands, scrolled here (the

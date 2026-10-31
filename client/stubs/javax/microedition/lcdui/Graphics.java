@@ -15,5 +15,6 @@ public class Graphics {
     public void fillArc(int x, int y, int w, int h, int s, int a) {}
     public void drawArc(int x, int y, int w, int h, int s, int a) {}
     public void drawString(String s, int x, int y, int a) {}
+    public void drawChar(char c, int x, int y, int a) {}
     public void drawImage(Image i, int x, int y, int a) {}
 }

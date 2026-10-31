@@ -1,7 +1,6 @@
 package fbc;
 
 import javax.microedition.lcdui.Canvas;
-import javax.microedition.lcdui.Font;
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
 
@@ -32,7 +31,6 @@ class BrowserCanvas extends Canvas implements Runnable {
     private static final int TRACKPAD_GAP_MS = 150;
     private long lastMoveAt;
 
-    private Image logo;
     private volatile boolean alive = true;
     // Busy indicator area, top-right corner.
     private static final int BUSY_W = 30;
@@ -41,7 +39,9 @@ class BrowserCanvas extends Canvas implements Runnable {
     private static final int[] FOOTER = {Icons.MENU, Icons.HOME, Icons.BACK};
 
     private final FbMidlet app;
-    private final Font font = Font.getFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+    private static TextFont font() {
+        return TextFrame.ui(TextFrame.UI_SIZE, false);
+    }
     private final boolean touch;
     private final int barH;
     private final MenuOverlay menu;
@@ -118,13 +118,8 @@ class BrowserCanvas extends Canvas implements Runnable {
         setFullScreenMode(true);
         touch = hasPointerEvents();
         touchMode = touch;
-        barH = touch ? Math.max(font.getHeight() + 22, 46) : 0;
+        barH = touch ? Math.max(font().height() + 22, 46) : 0;
         menu = new MenuOverlay(!touch);
-        try {
-            logo = Image.createImage("/icon.png");
-        } catch (Exception e) {
-            // Splash without logo.
-        }
         // Plain thread instead of an anonymous TimerTask: KEmulator fails to
         // load nested classes.
         new Thread(this).start();
@@ -341,10 +336,9 @@ class BrowserCanvas extends Canvas implements Runnable {
         return at != 0 && System.currentTimeMillis() - at < SPLASH_MAX_MS;
     }
 
-    private void drawSplash(Graphics g, int w, int vh) {
+    private void drawSplash(Graphics g, int w, int vh, int to) {
         g.setColor(SPLASH_BG);
         g.fillRect(0, 0, w, vh);
-        int to = splashTo;
         if (!splashTried[to]) {
             splashTried[to] = true;
             try {
@@ -362,13 +356,11 @@ class BrowserCanvas extends Canvas implements Runnable {
         } else {
             Icons.drawSmooth(g, SPLASH_ICON[to], w / 2, cy, s, SPLASH_COLOR[to], SPLASH_BG);
         }
-        g.setFont(font);
-        g.setColor(0x65676B);
         int ty = cy + s / 2 + 10;
-        g.drawString(SPLASH_NAME[to], w / 2, ty, Graphics.TOP | Graphics.HCENTER);
+        font().draw(g, SPLASH_NAME[to], w / 2, ty, 0x65676B, SPLASH_BG, Graphics.TOP | Graphics.HCENTER);
         // Three dots, one lit at a time.
         int phase = (int) ((System.currentTimeMillis() / 250) % 3);
-        int dy = ty + font.getHeight() + 14;
+        int dy = ty + font().height() + 14;
         for (int i = 0; i < 3; i++) {
             Icons.drawSmooth(g, Icons.CIRCLE, w / 2 + (i - 1) * 16, dy, 8,
                     i == phase ? SPLASH_COLOR[to] : 0xBCC0C4, SPLASH_BG);
@@ -423,18 +415,13 @@ class BrowserCanvas extends Canvas implements Runnable {
                 FocusRing.draw(g, f[0], y + f[1], f[2], f[3], 8);
             }
         } else {
-            g.setFont(font);
-            g.setColor(0x1877F2);
-            int ty = vh / 2;
-            if (logo != null) {
-                g.drawImage(logo, w / 2, vh / 2, Graphics.BOTTOM | Graphics.HCENTER);
-                ty += font.getHeight() + 8;
-            }
-            g.drawString("Loading...", w / 2, ty, Graphics.BASELINE | Graphics.HCENTER);
+            // Start-up, until the first frame: the same splash as switching
+            // back from Messenger.
+            drawSplash(g, w, vh, SPLASH_FACEBOOK);
         }
 
         if (splashShown()) {
-            drawSplash(g, w, vh);
+            drawSplash(g, w, vh, splashTo);
         }
 
         if (offerShown()) {
@@ -470,7 +457,7 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
 
         if (menu.open) {
-            menu.paint(g, w, vh, font, !touchMode,
+            menu.paint(g, w, vh, font(), !touchMode,
                     app.net == null ? "" : app.net.currentUrl);
         }
         if (barH > 0) {
@@ -499,15 +486,14 @@ class BrowserCanvas extends Canvas implements Runnable {
     }
 
     private void drawToast(Graphics g, String msg, int w, int h) {
-        g.setFont(font);
-        int tw = Math.min(font.stringWidth(msg) + 12, w);
-        int th = font.getHeight() + 6;
+        msg = font().shorten(msg, w - 12);
+        int tw = Math.min(font().stringWidth(msg) + 12, w);
+        int th = font().height() + 6;
         int x = (w - tw) / 2;
         int y = h - th - 6;
         g.setColor(0x333333);
         g.fillRoundRect(x, y, tw, th, 8, 8);
-        g.setColor(0xFFFFFF);
-        g.drawString(msg, w / 2, y + 3, Graphics.TOP | Graphics.HCENTER);
+        font().draw(g, msg, w / 2, y + 3, 0xFFFFFF, 0x333333, Graphics.TOP | Graphics.HCENTER);
     }
 
     // ---- Tick ----
@@ -531,6 +517,9 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
         if (toastMsg != null && now > toastUntil) {
             dirty = true;
+        }
+        if (page == null && image == null) {
+            dirty = true; // start-up splash animation
         }
         if (splashAt != 0) {
             dirty = true; // animation, and hiding it after SPLASH_MAX_MS
