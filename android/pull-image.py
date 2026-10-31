@@ -124,6 +124,24 @@ def apply_layer(fileobj, dest):
             target = inside(dest, name)
             if os.path.lexists(target) and not (m.isdir() and os.path.isdir(target) and not os.path.islink(target)):
                 remove(target)
+            if m.islnk():
+                # tarfile falls back to re-reading the target from the archive,
+                # which a download stream can't do: link or copy it ourselves.
+                link = m.linkname
+                while link.startswith('./'):
+                    link = link[2:]
+                src = inside(dest, link.lstrip('/'))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                try:
+                    # Termux's Python has no os.link (Android forbids it for apps).
+                    os.link(src, target)
+                except (OSError, AttributeError):
+                    shutil.copy2(src, target, follow_symlinks=False)
+                    try:
+                        os.lchown(target, m.uid, m.gid)
+                    except OSError:
+                        pass
+                continue
             m.name = name
             tf.extract(m, dest, numeric_owner=True, **extra)
 
