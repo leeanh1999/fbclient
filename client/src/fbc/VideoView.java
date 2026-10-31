@@ -113,10 +113,21 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
             setStatus(null);
             showBar();
             // Keep the progress bar moving; hide the bar once left alone.
+            long lightAt = 0;
             while (!closed) {
-                if (barShown && !paused && !ended && status == null
-                        && System.currentTimeMillis() > barUntil) {
+                long now = System.currentTimeMillis();
+                if (barShown && !paused && !ended && status == null && now > barUntil) {
                     setBar(false);
+                }
+                // MIDP has no "keep screen on": while playing, re-light the
+                // backlight before the phone's timeout (often 10-30 s) dims it.
+                if (!paused && !ended && now - lightAt > 5000) {
+                    lightAt = now;
+                    try {
+                        app.display.flashBacklight(15000);
+                    } catch (Throwable t) {
+                        // not supported on this phone
+                    }
                 }
                 repaint();
                 Thread.sleep(500);

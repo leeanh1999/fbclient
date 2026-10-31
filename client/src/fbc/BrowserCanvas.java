@@ -106,6 +106,8 @@ class BrowserCanvas extends Canvas implements Runnable {
     // Touch scrolling is vertical only: pages are laid out to the screen
     // width, so sideways drags would just reveal blank bands.
     private int px0, py0, dragY;
+    // Finger y where the drag started (after the slop), for the flick direction.
+    private int dragY0;
     private long pressAt;
     // Recent finger positions (y, time) for the flick speed, a ring. Touch
     // events often come in bursts a millisecond apart, so the speed is
@@ -871,6 +873,7 @@ class BrowserCanvas extends Canvas implements Runnable {
             clearOffer();
             // Follow the finger from here, without first jumping by the slop.
             py0 = y;
+            dragY0 = y;
             synchronized (this) {
                 pressSy = pageSy;
             }
@@ -936,6 +939,12 @@ class BrowserCanvas extends Canvas implements Runnable {
         long dt = Math.max(40, sampT[last] - sampT[first]);
         int v = (int) ((sampY[last] - sampY[first]) * 100 / dt); // px per 100 ms
         if (Math.abs(v) < 20) {
+            return 0;
+        }
+        // Lifting the finger can make the last events jump back (seen on
+        // BlackBerry touch screens): never flick against the whole drag.
+        int moved = sampY[last] - dragY0;
+        if (moved == 0 || (moved > 0) != (v > 0)) {
             return 0;
         }
         int max = 2 * viewHeight();

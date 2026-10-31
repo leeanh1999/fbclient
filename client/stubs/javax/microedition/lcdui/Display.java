@@ -4,4 +4,5 @@ public class Display {
     public void setCurrent(Displayable d) {}
     public void callSerially(Runnable r) {}
     public Displayable getCurrent() { return null; }
+    public boolean flashBacklight(int duration) { return false; }
 }
