@@ -8,6 +8,7 @@ on:
     # (the NAS would pull and restart for nothing). Tags ignore paths.
     paths-ignore:
       - 'client/**'
+      - 'android/**'
       - '.github/workflows/j2me.yml'
       - '**/*.md'
   pull_request:

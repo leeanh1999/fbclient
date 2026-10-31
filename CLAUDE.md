@@ -46,6 +46,14 @@ Docker / deploy: `docker build server`; the published image is `ghcr.io/leeanh19
 (**arm64 only**, Synology NAS, host port 5080). `deploy.sh` runs on the NAS. Pushing a `v*` tag
 attaches `FbClient.jar/.jad` to the GitHub release.
 
+Rooted Android phone (arm64, e.g. Redmi Note 5) instead of the NAS: no Docker there, so
+`android/pull-image.py` pulls the published image from GHCR and unpacks it as a rootfs, and
+`android/fbclient.sh` runs it in a chroot (port 5080; data bound from `/data/local/fbclient/data`;
+Magisk `service.d` autostart) plus `android/files.py` on port 8090, which serves the latest release's
+`FbClient.jad/.jar` for OTA installs. On the phone (Termux, `pkg install python`):
+`su -c "sh /sdcard/fbclient/fbclient.sh update"`. From the PC over SSH (Termux sshd, 8022):
+`PHONE=<ip> SSH_USER=<u> bash android/deploy-phone.sh [update|scripts|local|status|log|rollback]`.
+
 ## Client constraints (MIDP 2.0 / CLDC 1.1)
 
 - Source level 1.3, target 1.1 (ECJ), then ProGuard preverifies to class version 45 + StackMap.
