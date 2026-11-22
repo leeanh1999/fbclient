@@ -22,17 +22,17 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 # - python3 + yt-dlp: downloads videos for native playback on the phone.
 # - fonts-noto-core: Vietnamese text renders correctly in Chromium.
+# - fonts-noto-color-emoji: emoji, which the server draws as images for the phone.
 # - tini: reaps Chromium child processes and forwards stop signals.
 # - Playwright Chromium and its system libraries.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip tini ca-certificates fonts-noto-core \
+    fonts-noto-color-emoji \
  && pip3 install --no-cache-dir --break-system-packages yt-dlp \
  && npx playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.cache
 
 COPY server.js docker-entrypoint.sh ./
-# Page fonts the phone draws with (made by client/tools/mkfont.py).
-COPY fonts/ ./fonts/
 
 RUN mkdir -p /data
 VOLUME ["/data"]

@@ -3,25 +3,15 @@
 # version 45 with CLDC StackMap (preverified). Needs JDK 11+ and Maven (only
 # to download the tools). Works on Linux and Git Bash. Used by CI.
 #
-#   ./build.sh [dev|prod]     dev (default): server http://127.0.0.1:8080
-#                             prod: SERVER_URL from env or prod.conf
+#   ./build.sh
 #   VERSION=1.2.3 ./build.sh  MIDlet-Version (numbers only)
+#
+# The jar carries no server address: the app asks for it on its first start
+# (Settings changes it later).
 #
 # For emulators without Maven/network, build-emu.sh needs only a JDK.
 set -euo pipefail
 cd "$(dirname "$0")"
-
-PROFILE="${1:-dev}"
-case "$PROFILE" in
-  dev) SERVER_URL="${SERVER_URL:-http://127.0.0.1:8080}" ;;
-  prod)
-    if [ -z "${SERVER_URL:-}" ]; then
-      SERVER_URL=$(sed -n 's/^SERVER_URL=//p' prod.conf | tr -d '\r ')
-    fi
-    [ -n "$SERVER_URL" ] || { echo "prod build: set SERVER_URL in prod.conf or env" >&2; exit 1; }
-    ;;
-  *) echo "usage: $0 [dev|prod]" >&2; exit 1 ;;
-esac
 
 VERSION="${VERSION:-1.0.0}"
 OUT=build
@@ -52,7 +42,6 @@ MIDlet-1: Facebook, /icon.png, fbc.FbMidlet
 MIDlet-Icon: /icon.png
 MicroEdition-Configuration: CLDC-1.1
 MicroEdition-Profile: MIDP-2.0
-FbClient-Server: $SERVER_URL
 Nokia-MIDlet-Category: Application
 Nokia-MIDlet-On-Screen-Keypad: no
 EOF
@@ -78,4 +67,4 @@ SIZE=$(wc -c < "$OUT/FbClient.jar" | tr -d ' ')
   echo "MIDlet-Jar-Size: $SIZE"
 } > "$OUT/FbClient.jad"
 
-echo "Built $OUT/FbClient.jar ($SIZE bytes, $PROFILE, server $SERVER_URL), $OUT/FbClient.jad"
+echo "Built $OUT/FbClient.jar ($SIZE bytes), $OUT/FbClient.jad"

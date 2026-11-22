@@ -4,26 +4,9 @@
 # J2ME Loader / KEmulator / FreeJ2ME / MicroEmulator, not on real phones
 # (use build.sh for those).
 #
-# Usage: sh build-emu.sh [dev|prod]
-#   dev  (default) server = http://127.0.0.1:8080
-#   prod           server = SERVER_URL from env or prod.conf
+# Usage: sh build-emu.sh   (the app asks for the server on its first start)
 set -e
 cd "$(dirname "$0")"
-
-PROFILE=${1:-dev}
-case "$PROFILE" in
-    dev) SERVER_URL=${SERVER_URL:-http://127.0.0.1:8080} ;;
-    prod)
-        if [ -z "$SERVER_URL" ]; then
-            SERVER_URL=$(sed -n 's/^SERVER_URL=//p' prod.conf | tr -d '\r ')
-        fi
-        if [ -z "$SERVER_URL" ]; then
-            echo "prod build: set SERVER_URL in prod.conf or env" >&2
-            exit 1
-        fi
-        ;;
-    *) echo "usage: $0 [dev|prod]" >&2; exit 1 ;;
-esac
 OUT=${OUT:-dist}   # override if the jar is locked by a running emulator
 rm -rf build-emu
 mkdir -p build-emu/stubs build-emu/classes "$OUT"
@@ -42,7 +25,6 @@ MIDlet-1: Facebook, /icon.png, fbc.FbMidlet
 MIDlet-Icon: /icon.png
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
-FbClient-Server: $SERVER_URL
 Nokia-MIDlet-On-Screen-Keypad: no
 EOF
 jar cfm build-emu/FbClient.jar build-emu/MANIFEST.MF -C build-emu/classes . -C res .
@@ -63,7 +45,6 @@ MIDlet-Jar-URL: FbClient.jar
 MIDlet-Jar-Size: $SIZE
 MicroEdition-Profile: MIDP-2.0
 MicroEdition-Configuration: CLDC-1.1
-FbClient-Server: $SERVER_URL
 Nokia-MIDlet-On-Screen-Keypad: no
 EOF
-echo "Built $OUT/FbClient.jar ($SIZE bytes, $PROFILE, server $SERVER_URL)"
+echo "Built $OUT/FbClient.jar ($SIZE bytes)"

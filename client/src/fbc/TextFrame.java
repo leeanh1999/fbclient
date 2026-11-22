@@ -8,7 +8,8 @@ import javax.microedition.lcdui.Image;
  * Text mode: the server sends a screenshot taken without text plus the
  * page's text lines ("x y w h size flags rrggbb text", tab separated, one
  * per line, image px). They are drawn here (TextFont), once per frame,
- * so painting stays a plain drawImage. Picks fonts for page mode too.
+ * so painting stays a plain drawImage. Picks the fonts all the app's text
+ * uses: the phone's own, in its three sizes.
  */
 final class TextFrame {
 
@@ -17,29 +18,20 @@ final class TextFrame {
     private static final int CENTER = 4;
     private static final int TOP = 8;
 
-    // The app's fonts: bitmaps in the jar (em px, as tools/mkfont.py
-    // SIZES), [style][size], loaded on first use. All text the app draws
-    // uses them; phone fonts only stand in if the jar lacks one.
-    private static final int[] BMP_SIZES = {9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24};
-    // [sharp][style][size]
-    private static final TextFont[][][] BMP = new TextFont[2][2][BMP_SIZES.length];
-    // The same for the app's own text, spaced by hinted advances.
-    private static final TextFont[][][] UI = new TextFont[2][2][BMP_SIZES.length];
-    // Sharp (1-bit, hinted) glyphs instead of smooth (antialiased) ones.
-    private static boolean sharp;
-    private static TextFont[] broken;
+    // Phone fonts come in three sizes; a text's CSS px size picks one
+    // (FONT_PX: the smallest px for MEDIUM, for LARGE). [bold][size].
+    private static final int[] SIZES = {Font.SIZE_SMALL, Font.SIZE_MEDIUM, Font.SIZE_LARGE};
+    private static final int[] FONT_PX = {15, 20};
+    private static final TextFont[][] FONTS = new TextFont[2][3];
 
-    // Text size setting. Page text can't just be drawn bigger (it would run
-    // out of the boxes the page laid out), so Large lays the page out at
-    // 125% zoom; Small draws one font size down. gen changes with it, so
-    // cached fonts are redone.
+    // Text size setting: one phone font size up (Large) or down (Small).
+    // gen changes with it, so laid out text is redone.
     static final int SIZE_LARGE = 0;
     static final int SIZE_NORMAL = 1;
     static final int SIZE_SMALL = 2;
     static final int SIZE_DEFAULT = SIZE_NORMAL;
     static final String[] SIZE_NAMES = {"Large", "Default", "Small"};
-    private static final int[] STEP_DOWN = {0, 0, 1};
-    private static final int[] ZOOM_PCT = {125, 100, 100};
+    private static final int[] STEP = {1, 0, -1};
     private static int textFont = SIZE_DEFAULT;
 
     // App text (menu, toasts, buttons, video status), em px at 100% zoom;
@@ -57,20 +49,9 @@ final class TextFrame {
         zoom = z;
     }
 
-    /** Zoom the page is laid out at: the setting, raised for Large text. */
+    /** Zoom the page is laid out at (the setting). */
     static int pageZoom() {
-        return zoom * ZOOM_PCT[textFont] / 100;
-    }
-
-    static boolean isSharp() {
-        return sharp;
-    }
-
-    static void setSharp(boolean v) {
-        if (v != sharp) {
-            sharp = v;
-            gen++;
-        }
+        return zoom;
     }
 
     static void setTextFont(int v) {
@@ -163,52 +144,30 @@ final class TextFrame {
         return true;
     }
 
-    /** Bitmap font i (BMP_SIZES); a phone font only if the jar lacks it. */
+    /** Phone font of size index i (SIZES). */
     private static TextFont fontAt(int i, boolean bold) {
-        return fontAt(i, bold, false);
-    }
-
-    private static TextFont fontAt(int i, boolean bold, boolean ui) {
         int style = bold ? 1 : 0;
-        TextFont[][][] cache = ui ? UI : BMP;
-        TextFont t = cache[sharp ? 1 : 0][style][i];
+        TextFont t = FONTS[style][i];
         if (t == null) {
-            t = TextFont.load(BMP_SIZES[i], bold, sharp, ui);
-            if (t == null) {
-                if (broken == null) {
-                    broken = new TextFont[2];
-                }
-                t = broken[style];
-                if (t == null) {
-                    t = new TextFont(Font.getFont(Font.FACE_PROPORTIONAL,
-                            bold ? Font.STYLE_BOLD : Font.STYLE_PLAIN, Font.SIZE_SMALL));
-                    broken[style] = t;
-                }
-            }
-            cache[sharp ? 1 : 0][style][i] = t;
+            t = new TextFont(Font.getFont(Font.FACE_PROPORTIONAL, bold ? Font.STYLE_BOLD : Font.STYLE_PLAIN, SIZES[i]));
+            FONTS[style][i] = t;
         }
         return t;
     }
 
-    /** Index of the largest font of at most px. */
+    /** Size index for text of px (CSS px at the page's scale). */
     private static int index(int px) {
-        int best = 0;
-        for (int i = 0; i < BMP_SIZES.length; i++) {
-            if (BMP_SIZES[i] <= px) {
-                best = i;
-            }
-        }
-        return best;
+        return px >= FONT_PX[1] ? 2 : (px >= FONT_PX[0] ? 1 : 0);
     }
 
-    /** The font for the page's text of px size (with the setting's step down). */
+    /** The font for page text of px size (with the setting's step). */
     static TextFont font(int px, boolean bold) {
-        return fontAt(Math.max(0, index(px) - STEP_DOWN[textFont]), bold);
+        return fontAt(FbMidlet.clamp(index(px) + STEP[textFont], 0, 2), bold);
     }
 
     /** The font for the app's own text of px size (UI_SIZE, UI_BIG). */
     static TextFont ui(int px, boolean bold) {
-        return fontAt(index(px * pageZoom() / 100), bold, true);
+        return fontAt(index(px * pageZoom() / 100), bold);
     }
 
     /** How far text may run past the right of its box (phone px). */
@@ -223,7 +182,7 @@ final class TextFrame {
      * next line).
      */
     static TextFont fit(int px, boolean bold, String s, int w, int h) {
-        int i = Math.max(0, index(px) - STEP_DOWN[textFont]);
+        int i = FbMidlet.clamp(index(px) + STEP[textFont], 0, 2);
         TextFont f = fontAt(i, bold);
         while (i > 0 && (f.stringWidth(s) > w || f.height() > h + 3)) {
             f = fontAt(--i, bold);

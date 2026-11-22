@@ -69,7 +69,12 @@ class ImageLoader implements Runnable {
             }
             try {
                 while (running && loadSome()) {
-                    app.canvas.repaint();
+                    ImageSource src = source();
+                    if (src != null) {
+                        src.repaint();
+                    } else {
+                        app.canvas.repaint();
+                    }
                 }
             } catch (Throwable t) {
                 try {
@@ -82,16 +87,41 @@ class ImageLoader implements Runnable {
         }
     }
 
-    /** One request for the most needed images; false if none are missing. */
+    /** The app's own screen (feed, chats) that is shown, or null for the page. */
+    private ImageSource source() {
+        ImageSource f = app.feed;
+        if (f != null && f.shownNow()) {
+            return f;
+        }
+        ImageSource ch = app.chat;
+        if (ch != null && ch.shownNow()) {
+            return ch;
+        }
+        ImageSource r = app.reader;
+        return r != null && r.shownNow() ? r : null;
+    }
+
+    /**
+     * One request for the most needed images (of the feed or chat screen
+     * when one is shown, else of the page); false if none are missing.
+     */
     private boolean loadSome() throws Exception {
         BrowserCanvas c = app.canvas;
+        ImageSource f = source();
+        boolean feed = f != null;
         PageView p = c.page;
-        if (p == null) {
-            return false;
-        }
         int sy = c.pageSy;
         int vh = c.viewHeight();
-        Vector keys = p.missing(c.getWidth(), sy, sy + vh, sy - vh, sy + 2 * vh, cache, failed, BATCH, BATCH_PX);
+        // Emoji in text drawn so far first (small), then the screen's images.
+        Vector keys = Emoji.take(cache, failed, BATCH);
+        Vector more = feed ? f.missing(cache, failed, BATCH, BATCH_PX)
+                : p != null ? p.missing(c.getWidth(), sy, sy + vh, sy - vh, sy + 2 * vh, cache, failed, BATCH, BATCH_PX)
+                : new Vector();
+        for (int i = 0; i < more.size() && keys.size() < BATCH; i++) {
+            if (!keys.contains(more.elementAt(i))) {
+                keys.addElement(more.elementAt(i));
+            }
+        }
         if (keys.isEmpty()) {
             return false;
         }
@@ -107,7 +137,7 @@ class ImageLoader implements Runnable {
         url.append("&q=").append(app.quality);
         url.append(app.keyParam("&"));
         int got = fetch(url.toString());
-        evict(p, sy, vh);
+        evict(feed ? f.keysNear() : p != null ? p.keysIn(sy - 2 * vh, sy + 3 * vh) : new Hashtable());
         // Nothing came back (server busy or restarted): stop until the next
         // wake instead of asking again and again.
         empty = got > 0 ? 0 : empty + 1;
@@ -209,12 +239,12 @@ class ImageLoader implements Runnable {
         return true;
     }
 
-    /** Over the limit: drop cached images far from the view. */
-    private void evict(PageView p, int sy, int vh) {
+    /** Over the limit: drop cached images not in keep (far from the view). */
+    private void evict(Hashtable keep) {
         if (cachePx <= CACHE_PX) {
             return;
         }
-        Hashtable keep = p.keysIn(sy - 2 * vh, sy + 3 * vh);
+        Emoji.keepAll(keep);
         Vector drop = new Vector();
         int px = 0;
         for (Enumeration e = cache.keys(); e.hasMoreElements();) {

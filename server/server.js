@@ -20,6 +20,8 @@ const IDLE_MS = parseInt(process.env.IDLE_MIN || '5', 10) * 60000;
 // The desktop (Messenger) browser closes after this long unused once the
 // phone is back on Facebook (its profile keeps the login and E2EE keys).
 const DESK_IDLE_MS = parseInt(process.env.DESK_IDLE_MIN || '2', 10) * 60000;
+// Likewise the mobile browser while the phone stays in its chat screen.
+const MOB_IDLE_MS = parseInt(process.env.MOB_IDLE_MIN || '2', 10) * 60000;
 // Google Chrome has the H.264/AAC codecs Facebook videos need; bundled
 // Chromium does not. Set CHANNEL= (empty) to use bundled Chromium.
 const CHANNEL = process.env.CHANNEL === undefined ? 'chrome' : process.env.CHANNEL;
@@ -57,102 +59,11 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// The font the phone draws page text with (client/tools/mkfont.py makes
-// it): Roboto for both fn=s (sharp set) and fn=r (smooth set), [regular,
-// bold] as base64. Chromium lays text out with the same font, so lines are
-// as wide here as on the phone (no shrinking, cutting or overlapping).
-const PAGE_FONTS = {};
-for (const set of ['s', 'r']) {
-  try {
-    PAGE_FONTS[set] = ['r', 'b'].map((w) => fs.readFileSync(path.join(__dirname, 'fonts', `${set}-${w}.ttf`)).toString('base64'));
-  } catch (e) {
-    console.log('page font', set, 'missing:', e.message);
-  }
-}
-
-// Page mode: use the phone's font (fn) in the page; waits for it to load.
-async function applyFont(page, fn) {
-  const changed = await page.evaluate(async (f) => {
-    if (!window.__fbc) return false;
-    const c = window.__fbc.useFont(f);
-    if (c && document.fonts) await document.fonts.ready;
-    return c;
-  }, fn).catch(() => false);
-  if (changed) await sleep(100); // reflow, lazy lists re-measuring
-}
-
-// Injected into every page (addInitScript, with PAGE_FONTS): blocks inline
+// Injected into every page (addInitScript): blocks inline
 // video playback, hides "open the app" buttons and provides D-pad focus
 // navigation (window.__fbc, used by op=move / op=activate / click).
-function pageHelpers(fonts) {
+function pageHelpers() {
   if (window.__fbc) return;
-
-  // Page text in the phone's font (__fbc.useFont; remembered per site, so a
-  // new document has it before its first layout). The font only has the
-  // phone's characters; the page's own web fonts follow it, so icon-font
-  // glyphs (private-use characters) still come from those.
-  const pageFamilies = () => {
-    const names = new Set();
-    if (document.fonts) {
-      for (const ff of document.fonts) {
-        const n = ff.family.replace(/^["']|["']$/g, '').replace(/"/g, '');
-        if (n !== 'FbcText') names.add(`"${n}"`);
-      }
-    }
-    return [...names].join(',');
-  };
-  // FontFaces made from the font data are loaded at once (an @font-face
-  // URL loads later, after Facebook has measured text in the old font and
-  // fixed some widths, e.g. comment bubbles, which then cut the text).
-  const faces = {};
-  const facesOf = (f) => {
-    if (!faces[f]) {
-      faces[f] = fonts[f].map((b64, i) => {
-        const bin = atob(b64);
-        const data = new Uint8Array(bin.length);
-        for (let k = 0; k < bin.length; k++) data[k] = bin.charCodeAt(k);
-        return new FontFace('FbcText', data, { weight: i ? '600 900' : '100 599' });
-      });
-    }
-    return faces[f];
-  };
-  let fontNow = '';
-  let familiesNow = null;
-  const useFont = (f) => {
-    f = fonts && fonts[f] ? f : '';
-    try {
-      if (f) localStorage.setItem('fbc-font', f);
-      else localStorage.removeItem('fbc-font');
-    } catch (e) { /* no storage (about:blank) */ }
-    let st = document.getElementById('fbc-font');
-    const fam = f ? pageFamilies() : '';
-    if (f === fontNow && fam === familiesNow && (!f || st)) return false;
-    if (f !== fontNow && document.fonts) {
-      if (fontNow) for (const ff of facesOf(fontNow)) document.fonts.delete(ff);
-      if (f) for (const ff of facesOf(f)) document.fonts.add(ff);
-    }
-    fontNow = f;
-    familiesNow = fam;
-    if (!f) {
-      if (st) st.remove();
-      return true;
-    }
-    if (!st) {
-      st = document.createElement('style');
-      st.id = 'fbc-font';
-    }
-    // No kerning or ligatures: the phone draws glyph after glyph.
-    st.textContent = `*{font-family:FbcText,${fam ? fam + ',' : ''}system-ui,sans-serif!important;` +
-      'font-kerning:none!important;font-variant-ligatures:none!important}';
-    (document.head || document.documentElement).appendChild(st);
-    return true;
-  };
-  try {
-    const f = localStorage.getItem('fbc-font');
-    if (f) useFont(f);
-  } catch (e) { /* no storage */ }
-  // Web fonts loaded later (icon fonts) join the list.
-  if (document.fonts) document.fonts.addEventListener('loadingdone', () => fontNow && useFont(fontNow));
 
   // Videos play in the phone's native player, never inside the page.
   document.addEventListener('play', (e) => {
@@ -1001,8 +912,652 @@ function pageHelpers(fonts) {
   if (document.fonts) document.fonts.addEventListener('loadingdone', bump);
   const dumpKey = () => [docId, version, scrollPos(), innerWidth, innerHeight].join(':');
 
+  // ---- Feed view (the phone's own News Feed screen) ----
+  //
+  // m.facebook.com's feed is a Bloks "weblite" screen: each post is a block
+  // with data-tracking-duration-id made of MContainer / TextArea / ImageArea
+  // parts, with obfuscated or no class names. A post is read by its layout:
+  // a round avatar and a bold title line at the top, small grey meta text
+  // beside it, the body text, media (big images, videos) and a row of equal
+  // buttons at the bottom (Like, Comment, Share), each with its count.
+  const FEED_SEL = '[data-tracking-duration-id]';
+  // Private-use characters: Facebook's icon font (privacy globe, verified
+  // badge, button icons), BMP and planes 15/16.
+  const PUA = /[-]|[\uDB80-\uDBFF][\uDC00-\uDFFF]/g;
+  const MORE = /^(?:\.\.\.|…)?\s*(?:Xem thêm|See more)$/i;
+  const flat = (s) => s.replace(PUA, '').replace(/\s+/g, ' ').trim();
+  const feedBlocks = () => Array.from(document.querySelectorAll(FEED_SEL))
+    .filter((el) => !(el.parentElement && el.parentElement.closest(FEED_SEL)));
+  const feedBlock = (k) => feedBlocks().find((el) => {
+    const s = readPost(el, null);
+    return s && s.k === k;
+  });
+  const feedParts = (el) => {
+    const R = el.getBoundingClientRect();
+    const imgs = Array.from(el.querySelectorAll('img')).map((im) => ({ im, r: im.getBoundingClientRect() }))
+      .filter((o) => o.r.width >= 2 && o.r.height >= 2);
+    const avatar = imgs.find((o) => o.r.top - R.top < 90 && o.r.width >= 24 && o.r.width <= 64 &&
+      Math.abs(o.r.width - o.r.height) < 4);
+    const headBottom = avatar ? avatar.r.bottom - R.top + 6 : 64;
+    // The bottom row: two or more wide buttons of the same height.
+    const buttons = Array.from(el.querySelectorAll('[role="button"]'))
+      .map((b) => ({ b, r: b.getBoundingClientRect() }))
+      .filter((o) => o.r.height >= 26 && o.r.height <= 60 && o.r.width >= R.width / 5 && o.r.bottom > R.bottom - 80);
+    const row = buttons.length ? buttons.filter((o) => Math.abs(o.r.top - buttons[buttons.length - 1].r.top) < 4) : [];
+    row.sort((a, b) => a.r.left - b.r.left);
+    const footTop = row.length >= 2 ? row[0].r.top - R.top : R.height;
+    return { R, imgs, avatar, headBottom, footer: row.length >= 2 ? row.map((o) => o.b) : [], footTop };
+  };
+  const imgHtml = (im, round) => {
+    const src = im.currentSrc || im.src || '';
+    if (!src || /^data:image\/gif/.test(src)) return '';
+    const tag = `<img src="${attr(src)}" style="display:block;width:100%;height:100%;object-fit:cover">`;
+    return round ? `<div style="width:100%;height:100%;border-radius:50%;overflow:hidden">${tag}</div>` : tag;
+  };
+  // Big images and videos of a post below its header, above its buttons,
+  // on screen sideways (not the rest of a carousel).
+  const feedMedia = (p) => p.imgs.filter((o) => o !== p.avatar && o.r.width >= 100 && o.r.height >= 60 &&
+    o.r.top - p.R.top >= p.headBottom - 8 && o.r.top - p.R.top < p.footTop &&
+    o.r.left - p.R.left < p.R.width - 40 && o.r.right - p.R.left > 40).slice(0, 4);
+  // One post, or null if el is not one. recipe(html, w, h, alpha) -> key
+  // registers images; null when only the key (k) is needed. The key is made
+  // from the content: data-tracking-duration-id changes as the feed scrolls.
+  const readPost = (el, recipe) => {
+    const p = feedParts(el);
+    const { R } = p;
+    if (R.height < 60 || R.width < 200) return null;
+    // Text runs in DOM order, grouped by their TextArea.
+    const runs = [];
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.data.trim()) continue;
+      const pe = n.parentElement;
+      const cs = getComputedStyle(pe);
+      if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+      const r = pe.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const col = rgb(cs.color);
+      runs.push({
+        t: n.data, y: r.top - R.top, fs: parseFloat(cs.fontSize) || 14, bold: parseInt(cs.fontWeight, 10) >= 600,
+        blue: !!col && ((col.v & 255) > 200 && (col.v >> 16 & 255) < 90),
+        area: pe.closest('[data-mcomponent$="TextArea"]') || pe,
+        btn: pe.closest('[role="button"]'),
+        foot: p.footer.some((b) => b.contains(pe)),
+      });
+    }
+    const head = runs.filter((r) => r.y < p.headBottom && !r.foot);
+    const first = head.find((r) => r.bold);
+    if (!first) return null; // not a post (stories tray, composer, suggestions)
+    const join = (list) => flat(list.map((r) => r.t).join(''));
+    const title = join(head.filter((r) => r.area === first.area));
+    const meta = flat(head.filter((r) => r.area !== first.area && r.fs <= 13.5).map((r) => r.t).join(' '))
+      .replace(/^·\s*|\s*·$/g, '');
+    const media = feedMedia(p);
+    const mediaTop = media.length ? Math.min(...media.map((o) => o.r.top)) - R.top : p.footTop;
+    // Body: text between the header and the media; "Xem thêm" means cut.
+    let more = false;
+    const paragraphs = (list) => {
+      const out = [];
+      let area = null;
+      for (const r of list) {
+        if (MORE.test(flat(r.t))) {
+          more = true;
+          continue;
+        }
+        if (r.area !== area) out.push('');
+        area = r.area;
+        out[out.length - 1] += r.t;
+      }
+      return out.map((s) => s.replace(PUA, '').replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+    };
+    const rest = runs.filter((r) => r.y >= p.headBottom - 2 && !r.foot && r.y < p.footTop);
+    const body = paragraphs(rest.filter((r) => r.y < mediaTop && !r.btn && r.fs >= 13));
+    // Under the media: a shared link's title, a page's name and so on.
+    const card = paragraphs(rest.filter((r) => r.y >= mediaTop && !r.btn && r.area !== first.area)).slice(0, 4);
+    if (!body.length && !media.length && !card.length) return null;
+    const k = hashOf([title, body[0] || '', card[0] || ''].join('|'));
+    if (!recipe) return { k };
+    const count = (b) => {
+      const m = b && flat(b.textContent || '').match(/\d[\d.,]*\s*(?:K|M|N|Tr)?/i);
+      return m ? m[0].replace(/\s+/g, '') : '';
+    };
+    const liked = p.footer.length > 0 && runs.some((r) => r.foot && r.blue && p.footer[0].contains(r.btn || document.body));
+    const av = p.avatar && imgHtml(p.avatar.im, true);
+    return {
+      k, title, meta, more, body, card, liked,
+      avatar: av ? { k: recipe(av, p.avatar.r.width, p.avatar.r.height, true), w: p.avatar.r.width } : null,
+      media: media.map((o) => {
+        const h = imgHtml(o.im, false);
+        return h && {
+          k: recipe(h, o.r.width, o.r.height, false),
+          x: o.r.left - R.left, y: o.r.top - R.top - mediaTop, w: o.r.width, h: o.r.height,
+          video: !!o.im.closest('[data-video-id], [data-mcomponent="MVideo"]'),
+        };
+      }).filter(Boolean),
+      likes: count(p.footer[0]), comments: count(p.footer[1]), shares: count(p.footer[2]),
+    };
+  };
+  // Every post now in the page, in order, with the image recipes they use.
+  const feedDump = () => {
+    const recipes = {};
+    const recipe = (html, w, h, alpha) => {
+      const k = hashOf(html + '|' + Math.round(w) + 'x' + Math.round(h));
+      recipes[k] = { html, w: Math.ceil(w), h: Math.ceil(h), alpha };
+      return k;
+    };
+    const stories = [];
+    for (const el of feedBlocks()) {
+      const s = readPost(el, recipe);
+      if (s && !stories.some((o) => o.k === s.k)) stories.push(s);
+    }
+    return { stories, recipes };
+  };
+  // Where to tap in post k (viewport CSS px) for: like, comment, share,
+  // author (avatar), post (the body, else the meta line), media i.
+  const feedTarget = (k, what, i) => {
+    const el = feedBlock(k);
+    if (!el) return null;
+    const p = feedParts(el);
+    let t = null;
+    if (what === 'like' || what === 'comment' || what === 'share') {
+      t = p.footer[{ like: 0, comment: 1, share: 2 }[what]];
+    } else if (what === 'author') {
+      t = p.avatar && p.avatar.im;
+    } else if (what === 'media') {
+      t = feedMedia(p)[i || 0];
+      t = t && t.im;
+    } else {
+      // The body text opens the post; without one, the meta line (time).
+      const areas = Array.from(el.querySelectorAll('[data-mcomponent$="TextArea"]'))
+        .filter((a) => {
+          const r = a.getBoundingClientRect();
+          return r.height > 0 && r.top - p.R.top >= p.headBottom - 2 && r.top - p.R.top < p.footTop;
+        });
+      t = areas[0] || el.querySelector('[data-action-id]');
+    }
+    if (!t) return null;
+    t.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const r = t.getBoundingClientRect();
+    return { x: r.left + Math.min(r.width / 2, 40), y: r.top + r.height / 2 };
+  };
+
+  // ---- Chat screen (Messenger in the desktop view) ----
+  //
+  // At phone width Messenger shows either the chat list ([role=grid] rows,
+  // each a link to /messages/t/<id> or /messages/e2ee/t/<id>) or one thread:
+  // [role=log] holding a virtualized list of [role=article] messages. Each
+  // message's aria-label reads "... <time>, <sender>: <text>", so the text
+  // needs no layout reading; whose it is comes from where it sits (own
+  // messages hug the right, others' start after the avatar column and have
+  // a grey bubble).
+  const chatKey = (href) => {
+    const m = /\/messages\/(e2ee\/)?t\/(\d+)/.exec(href || '');
+    return m ? (m[1] ? 'e' : 't') + m[2] : '';
+  };
+  const chatRows = () => Array.from(document.querySelectorAll('[role="grid"] a[href*="/messages/"]'))
+    .filter((a) => chatKey(a.getAttribute('href')) && a.getBoundingClientRect().height > 0);
+  const chatLog = () => {
+    const lg = document.querySelector('[role="log"]');
+    return lg && lg.getBoundingClientRect().width > 100 ? lg : null;
+  };
+  const scrollerIn = (root) => Array.from(root.querySelectorAll('*'))
+    .find((e) => e.scrollHeight > e.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(e).overflowY));
+  const scrollerOf = (el) => {
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      if (e.scrollHeight > e.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) return e;
+    }
+    return null;
+  };
+  // Image of an <img>/<video> for a recipe: its URL, or (blob: URLs of
+  // end-to-end encrypted media, which only this page can read) a JPEG of it
+  // drawn here.
+  // Drawn once per element and source (every dump would redraw them).
+  const drawn = new WeakMap();
+  const mediaSrc = (el, w, h) => {
+    const src = el.tagName === 'VIDEO' ? (el.poster || '') : (el.currentSrc || el.src || '');
+    if (/^https?:/.test(src)) return src;
+    const key = src + '|' + Math.round(w) + 'x' + Math.round(h);
+    const old = drawn.get(el);
+    if (old && old.key === key) return old.url;
+    try {
+      const c = document.createElement('canvas');
+      const s = Math.min(1, 240 / Math.max(w, h));
+      c.width = Math.max(1, Math.round(w * s));
+      c.height = Math.max(1, Math.round(h * s));
+      c.getContext('2d').drawImage(el, 0, 0, c.width, c.height);
+      const url = c.toDataURL('image/jpeg', 0.8);
+      // A video not playing yet draws nothing useful: try again next time.
+      if (el.tagName !== 'VIDEO' || el.readyState >= 2) drawn.set(el, { key, url });
+      return url;
+    } catch (e) {
+      return '';
+    }
+  };
+  const chatList = () => {
+    const recipes = {};
+    const items = [];
+    for (const a of chatRows()) {
+      const k = chatKey(a.getAttribute('href'));
+      if (items.some((o) => o.k === k)) continue;
+      let name = '';
+      let bold = false;
+      const snip = [];
+      const walker = document.createTreeWalker(a, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!n.data.trim() || n.parentElement.closest('abbr')) continue;
+        const cs = getComputedStyle(n.parentElement);
+        const fs = parseFloat(cs.fontSize) || 0;
+        if (fs < 6) continue; // text for screen readers only
+        if (!name && fs >= 14.5) {
+          name = n.data;
+          bold = parseInt(cs.fontWeight, 10) >= 600;
+        } else if (name) {
+          snip.push(n.data);
+          if (parseInt(cs.fontWeight, 10) >= 600) bold = true;
+        }
+      }
+      const abbr = a.querySelector('abbr');
+      let unread = bold;
+      let online = false;
+      const R = a.getBoundingClientRect();
+      for (const e of a.querySelectorAll('div, span')) {
+        const r = e.getBoundingClientRect();
+        if (r.width < 8 || r.width > 20 || Math.abs(r.width - r.height) > 2) continue;
+        const c = rgb(getComputedStyle(e).backgroundColor);
+        if (!c || c.a < 0.5) continue;
+        const cr = c.v >> 16 & 255;
+        const cg = c.v >> 8 & 255;
+        const cb = c.v & 255;
+        if (cg > cr + 40 && cg > cb + 20) online = true;
+        else if (cb > 150 && cr < 60 && r.left - R.left > R.width / 2) unread = true;
+      }
+      const im = Array.from(a.querySelectorAll('img')).find((i) => i.getBoundingClientRect().width >= 30);
+      let avatar = '';
+      if (im) {
+        const src = mediaSrc(im, 40, 40);
+        if (src) {
+          const html = `<div style="width:100%;height:100%;border-radius:50%;overflow:hidden"><img src="${attr(src)}" ` +
+            'style="display:block;width:100%;height:100%;object-fit:cover"></div>';
+          avatar = hashOf(html + '|40x40');
+          recipes[avatar] = { html, w: 40, h: 40, alpha: true };
+        }
+      }
+      items.push({
+        k, name: flat(name), unread, online, avatar,
+        snippet: flat(snip.join(' ')).replace(/^·\s*|\s*·$/g, ''),
+        time: abbr ? flat(abbr.textContent) : '',
+      });
+    }
+    const first = chatRows()[0];
+    const sc = first && scrollerOf(first);
+    return { items, recipes, top: !sc || sc.scrollTop <= 4 };
+  };
+  const chatThread = () => {
+    const lg = chatLog();
+    if (!lg) return null;
+    const L = lg.getBoundingClientRect();
+    const recipes = {};
+    const msgs = [];
+    for (const art of lg.querySelectorAll('[role="article"]')) {
+      const m = art.querySelector('[aria-roledescription]') || art;
+      const aria = (m.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      const tm = /(\d{1,2}:\d{2})[^,]*,\s*([\s\S]*)$/.exec(aria);
+      let sender = '';
+      let text = '';
+      let time = '';
+      if (tm) {
+        time = tm[1];
+        const colon = tm[2].indexOf(':');
+        sender = (colon >= 0 ? tm[2].slice(0, colon) : tm[2]).trim();
+        text = colon >= 0 ? tm[2].slice(colon + 1).trim() : '';
+      }
+      // Where the content is: visible message text and media.
+      let left = 1e9;
+      let right = -1e9;
+      let grey = false;
+      const seen = [];
+      const walker = document.createTreeWalker(m, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const pe = n.parentElement;
+        if (!n.data.trim() || pe.closest('[role="toolbar"], [role="button"][aria-label*=";"]')) continue;
+        const r = pe.getBoundingClientRect();
+        const cs = getComputedStyle(pe);
+        if (r.width <= 3 || parseFloat(cs.fontSize) < 14) continue;
+        let bg = null;
+        for (let b = pe, i = 0; b && b !== m && i < 10; b = b.parentElement, i++) {
+          const c = rgb(getComputedStyle(b).backgroundColor);
+          if (c && c.a > 0.5 && c.v !== 0xffffff) {
+            bg = c;
+            break;
+          }
+        }
+        if (bg && bg.a > 0.7 && (bg.v >> 16 & 255) < 40) continue; // a dark tooltip
+        if (bg && (bg.v >> 16 & 255) > 200 && (bg.v & 255) > 200) grey = true;
+        left = Math.min(left, r.left);
+        right = Math.max(right, r.right);
+        seen.push(n.data);
+      }
+      const media = [];
+      let av = '';
+      for (const el of m.querySelectorAll('img, video')) {
+        if (el.closest('[role="toolbar"]')) continue;
+        const r = el.getBoundingClientRect();
+        // The sender's avatar, beside the last message of a group.
+        if (!av && el.tagName === 'IMG' && r.width >= 20 && r.width <= 40 && r.left - L.left < 50) {
+          const src = mediaSrc(el, 28, 28);
+          if (src) {
+            const html = `<div style="width:100%;height:100%;border-radius:50%;overflow:hidden"><img src="${attr(src)}" ` +
+              'style="display:block;width:100%;height:100%;object-fit:cover"></div>';
+            av = hashOf(html + '|28x28');
+            recipes[av] = { html, w: 28, h: 28, alpha: true };
+          }
+          continue;
+        }
+        if (r.width < 60 || r.height < 40) continue;
+        left = Math.min(left, r.left);
+        right = Math.max(right, r.right);
+        if (media.length >= 4) continue;
+        const w = Math.min(r.width, 200);
+        const h = Math.round(r.height * w / r.width);
+        const src = mediaSrc(el, r.width, r.height);
+        const video = el.tagName === 'VIDEO';
+        if (!src) {
+          media.push({ k: '', w, h, video });
+          continue;
+        }
+        const html = `<img src="${attr(src)}" style="display:block;width:100%;height:100%;object-fit:cover">`;
+        const k = hashOf(html + '|' + w + 'x' + h);
+        recipes[k] = { html, w: Math.ceil(w), h: Math.ceil(h), alpha: false };
+        media.push({ k, w, h, video });
+      }
+      if (!text && !media.length) text = flat(seen.join(' '));
+      if (!aria && !text && !media.length) continue;
+      const mine = !grey && left < 1e9 && left - L.left > L.width * 0.2 && L.right - right < L.width * 0.25;
+      msgs.push({ k: hashOf(aria + '|' + text + '|' + media.length), mine, sender, time, text, media, av: mine ? '' : av });
+    }
+    const sc = scrollerIn(lg);
+    return { msgs, recipes, top: !sc || sc.scrollTop <= 4 };
+  };
+  // Where to tap: a chat row (k), the composer, the thread's Back button.
+  const chatTarget = (what, k) => {
+    let t = null;
+    if (what === 'open') {
+      t = chatRows().find((a) => chatKey(a.getAttribute('href')) === k);
+    } else if (what === 'composer') {
+      t = Array.from(document.querySelectorAll('[role="textbox"][contenteditable="true"]'))
+        .find((e) => e.getBoundingClientRect().width > 20);
+    } else if (what === 'back') {
+      const main = document.querySelector('[role="main"]');
+      t = main && Array.from(main.querySelectorAll('[role="button"][aria-label], a[aria-label]'))
+        .find((b) => {
+          const r = b.getBoundingClientRect();
+          return r.width > 0 && r.left < 60 && r.top < 130;
+        });
+    }
+    if (!t) return null;
+    t.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const r = t.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+  // Scroll the list down, or the thread up (most of a view, so no message
+  // is skipped between two dumps) or to the bottom. Returns null if there
+  // is nothing to scroll, else { top: the thread is at its top }.
+  const chatScroll = (what) => {
+    const lg = chatLog();
+    if (what === 'list' || what === 'listtop') {
+      const row = chatRows().pop();
+      const sc = row && scrollerOf(row);
+      if (sc) sc.scrollTop = what === 'listtop' ? 0 : sc.scrollTop + sc.clientHeight * 2;
+      return sc ? { top: false } : null;
+    }
+    const sc = lg && scrollerIn(lg);
+    if (!sc) return null;
+    if (what === 'bottom') sc.scrollTop = sc.scrollHeight;
+    else if (what === 'top') sc.scrollTop = 0;
+    else sc.scrollTop -= sc.clientHeight * 0.8;
+    return { top: sc.scrollTop <= 4 };
+  };
+
+  // ---- Reader (the phone's own screen for any other page) ----
+  //
+  // The page as rows of items in reading order, for the phone to lay out
+  // and draw itself: text runs (size, weight, colour), images, inputs.
+  // Items on the same line of the page share a row; nesting shows as the
+  // row's indent. Whatever can be pressed gets a key (data-fbc-k on its
+  // element), which the phone sends back to press it here.
+  let fbcSeq = 0;
+  const PRESS_SEL = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], ' +
+    '[role="checkbox"], [role="switch"], [role="option"], [data-action-id], label, select, summary';
+  const EDIT_SEL = 'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), ' +
+    'textarea, [contenteditable="true"], [role="textbox"], [role="combobox"]';
+  const keyOf = (el) => {
+    if (!el) return '';
+    let k = el.getAttribute('data-fbc-k');
+    if (!k) {
+      k = 'k' + (++fbcSeq).toString(36);
+      el.setAttribute('data-fbc-k', k);
+    }
+    return k;
+  };
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return null;
+    return r;
+  };
+  const readerDump = () => {
+    const recipes = {};
+    const items = [];
+    const sy = scrollY;
+    const doneEdit = new Set();
+    const imgSeen = new Set();
+    const vw = innerWidth;
+    // Bars pinned to the screen (position fixed/sticky): their document y
+    // is wherever the view is, so they would land inside the content. Top
+    // ones go first, bottom ones (a comment box) last. Memoized per element.
+    const pinMemo = new Map();
+    const pinOf = (el) => {
+      if (!el || el === document.body || el === document.documentElement) return 0;
+      if (pinMemo.has(el)) return pinMemo.get(el);
+      const pos = getComputedStyle(el).position;
+      let p;
+      if (pos === 'fixed' || pos === 'sticky') {
+        p = el.getBoundingClientRect().top < innerHeight / 2 ? -1 : 1;
+      } else {
+        p = pinOf(el.parentElement);
+      }
+      pinMemo.set(el, p);
+      return p;
+    };
+    const push = (it, r, el) => {
+      it.y = r.top + sy;
+      it.b = r.bottom + sy;
+      it.x = Math.max(0, r.left);
+      it.pin = pinOf(el);
+      // The page's own top bar (Back, title, Search): the phone has its own.
+      if (it.pin < 0) return;
+      if (it.pin) {
+        // In order among the pinned ones, by their place on the screen.
+        it.y = r.top + 1e7;
+        it.b = r.bottom + 1e7;
+      }
+      items.push(it);
+    };
+    // A button that shows only an icon reads as its label, if short (long
+    // ones are descriptions: "More options for <page name>").
+    const iconLabel = (el) => {
+      const lab = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+      return lab.length <= 18 ? lab : '';
+    };
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        // aria-hidden is kept: Facebook hides visible text from screen
+        // readers (a commenter's name, counts) and labels the block instead.
+        if (n.nodeType === 1) {
+          const t = n.tagName;
+          if (t === 'SCRIPT' || t === 'STYLE' || t === 'NOSCRIPT' || t === 'TEMPLATE') {
+            return NodeFilter.FILTER_REJECT;
+          }
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const labelled = new Set();
+    for (let n = walker.nextNode(); n && items.length < 1500; n = walker.nextNode()) {
+      if (n.nodeType === 3) {
+        const raw = n.data;
+        if (!raw.trim()) continue;
+        const pe = n.parentElement;
+        if (pe.closest(EDIT_SEL)) continue;
+        const r = shown(pe);
+        // Text for screen readers only (1 px boxes, 1 px font) would repeat
+        // what is shown.
+        if (!r || r.width <= 2 || r.height <= 2 || parseFloat(getComputedStyle(pe).fontSize) < 6) continue;
+        const text = raw.replace(PUA, '').replace(/\s+/g, ' ');
+        const press = pe.closest(PRESS_SEL);
+        if (!text.trim()) {
+          // An icon-font glyph: a button with a label still shows (as text).
+          if (press && !labelled.has(press)) {
+            const lab = iconLabel(press);
+            if (lab && !press.textContent.replace(PUA, '').trim()) {
+              labelled.add(press);
+              push({ t: 'T', s: lab, fs: 13, bold: false, col: 0x65676b, a: keyOf(press) }, r, pe);
+            }
+          }
+          continue;
+        }
+        const cs = getComputedStyle(pe);
+        const col = rgb(cs.color);
+        // The colour behind it when not white (a button's fill).
+        let bg = -1;
+        for (let b = pe, i = 0; b && b !== document.body && i < 6; b = b.parentElement, i++) {
+          const c = rgb(getComputedStyle(b).backgroundColor);
+          if (c && c.a > 0.5) {
+            bg = c.v === 0xffffff ? -1 : c.v;
+            break;
+          }
+        }
+        // (Emoji stay in the text: the server sends them as images, see emojify.)
+        push({
+          t: 'T', s: text, fs: parseFloat(cs.fontSize) || 14, bold: parseInt(cs.fontWeight, 10) >= 600,
+          col: col ? col.v : 0, bg, a: press ? keyOf(press) : '',
+        }, r, pe);
+        continue;
+      }
+      const el = n;
+      const tag = el.tagName;
+      if (el.matches(EDIT_SEL) && !doneEdit.has(el)) {
+        const r = shown(el);
+        if (!r) continue;
+        doneEdit.add(el);
+        const ph = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
+        const val = 'value' in el && typeof el.value === 'string' ? el.value : (el.innerText || '');
+        push({ t: 'E', s: ph.trim(), v: val.trim(), a: keyOf(el), pass: el.type === 'password' }, r, el);
+        continue;
+      }
+      if (tag === 'IMG' || tag === 'VIDEO' || (tag === 'DIV' && el.getAttribute('data-mcomponent') === 'ImageArea' && !el.querySelector('img'))) {
+        const r = shown(el);
+        if (!r || r.width < 12 || r.height < 12 || imgSeen.has(el)) continue;
+        imgSeen.add(el);
+        const press = el.closest(PRESS_SEL);
+        const video = tag === 'VIDEO' || !!el.closest('[data-video-id], [data-mcomponent="MVideo"]');
+        const w = Math.min(r.width, vw);
+        const h = r.height * w / r.width;
+        let html = '';
+        if (tag === 'DIV') {
+          const cs = getComputedStyle(el);
+          if (cs.backgroundImage === 'none') continue;
+          html = `<div style="width:100%;height:100%;background-image:${attr(cs.backgroundImage)};` +
+            `background-size:${cs.backgroundSize};background-position:${cs.backgroundPosition}"></div>`;
+        } else {
+          const src = mediaSrc(el, r.width, r.height);
+          if (!src) continue;
+          const cs = getComputedStyle(el);
+          const round = parseFloat(cs.borderRadius) >= Math.min(r.width, r.height) / 2 - 1 ||
+            (el.closest('[style*="border-radius"]') && r.width <= 80 && Math.abs(r.width - r.height) < 2);
+          html = `<img src="${attr(src)}" style="display:block;width:100%;height:100%;object-fit:cover">`;
+          if (round) html = `<div style="width:100%;height:100%;border-radius:50%;overflow:hidden">${html}</div>`;
+        }
+        const k = hashOf(html + '|' + Math.round(w) + 'x' + Math.round(h));
+        recipes[k] = { html, w: Math.ceil(w), h: Math.ceil(h), alpha: w * h < 6400 };
+        push({ t: 'I', k, w, h, video, a: press ? keyOf(press) : (video ? keyOf(el) : '') }, r, el);
+        continue;
+      }
+      // A pressable element with no text or image inside: its label.
+      if (el.matches(PRESS_SEL) && !labelled.has(el) && !el.textContent.trim() && !el.querySelector('img, svg image')) {
+        const lab = iconLabel(el);
+        const r = lab && shown(el);
+        if (r && r.width >= 8 && r.height >= 8) {
+          labelled.add(el);
+          push({ t: 'T', s: lab, fs: 13, bold: false, col: 0x65676b, a: keyOf(el) }, r, el);
+        }
+      }
+    }
+    // Rows: items whose boxes overlap vertically, in document order within
+    // a row (by x would shuffle a paragraph: a run spanning lines starts
+    // at the left). nl: the item starts below the one before it (the page
+    // breaks the line there, e.g. a commenter's name above the comment).
+    items.forEach((it, i) => {
+      it.i = i;
+    });
+    items.sort((p, q) => (p.y - q.y) || (p.i - q.i));
+    const rows = [];
+    let row = null;
+    for (const it of items) {
+      if (!row || it.y >= row.b - 2) {
+        row = { b: it.b, x: it.x, items: [] };
+        rows.push(row);
+      }
+      row.b = Math.max(row.b, it.b);
+      row.x = Math.min(row.x, it.x);
+      row.items.push(it);
+    }
+    for (const r of rows) {
+      r.items.sort((p, q) => p.i - q.i);
+      for (let j = 1; j < r.items.length; j++) {
+        const p = r.items[j - 1];
+        r.items[j].nl = r.items[j].y >= p.b - 3 && !(r.items[j].t === 'I' && p.t === 'I');
+      }
+    }
+    const docH = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
+    return { url: location.href, title: document.title, rows, recipes, end: sy + innerHeight >= docH - 4 };
+  };
+  // Where to press the element with key k (viewport CSS px), brought into view.
+  const readerTarget = (k) => {
+    const el = document.querySelector(`[data-fbc-k="${k}"]`);
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    return { x: r.left + Math.min(r.width / 2, 60), y: r.top + r.height / 2, line: el.tagName === 'INPUT' };
+  };
+  const readerCount = () => document.body ? document.body.querySelectorAll('[data-mcomponent], p, li, article').length : 0;
+
+  // What the page needs from the user before the phone's own screens can
+  // work: 'login' (a login, checkpoint or 2FA page), 'pin' (Messenger's PIN
+  // that restores end-to-end encrypted chats), or ''.
+  const PIN_TEXT = /\bPIN\b/;
+  const needs = () => {
+    const href = location.href;
+    if (/\/messages\/|messenger\.com/.test(href)) {
+      const dialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+        .find((d) => d.getBoundingClientRect().width > 0 && PIN_TEXT.test(d.innerText || ''));
+      if (dialog) return 'pin';
+      if (!chatLog() && !chatRows().length && PIN_TEXT.test(document.body ? document.body.innerText : '')) return 'pin';
+    }
+    if (/\/(login|checkpoint|recover|two_step_verification|two_factor|auth_platform|device-based)/i.test(location.pathname)) {
+      return 'login';
+    }
+    const pass = document.querySelector('input[type="password"], input[name="pass"]');
+    if (pass && pass.getBoundingClientRect().width > 0 && !chatLog() && !feedBlocks().length) return 'login';
+    return '';
+  };
+
   window.__fbc = { move, target, reveal, videoAt, rect, scrollAt, textDump, pageDump, scrollPos, paneTo, dumpKey, pinnedAt,
-    useFont, clear: () => mark(null) };
+    needs, readerDump, readerTarget, readerCount, feedDump, feedTarget, feedCount: () => feedBlocks().length,
+    chatList, chatThread, chatTarget, chatScroll, chatKeys: () => chatRows().map((a) => chatKey(a.getAttribute('href'))), chatState: () => (chatLog() ? 'thread' : chatRows().length ? 'list' : ''),
+    clear: () => mark(null) };
 }
 
 function wantMode(url) {
@@ -1036,10 +1591,14 @@ async function launchView(s, mode) {
     hasTouch: false,
     userAgent: desk ? UA_DESKTOP : UA_MOBILE,
     locale: 'vi-VN',
-    // The phone's font goes into pages as a data: URL (applyFont), which
-    // Facebook's Content-Security-Policy would block.
+    // The helpers draw images (emoji, encrypted media) into canvases and
+    // read them back; keep Facebook's Content-Security-Policy out of it.
     bypassCSP: true,
-    args: ['--disable-dev-shm-usage', '--deny-permission-prompts'],
+    // Less memory and background work: no extensions, sync, translate,
+    // component updates or audio, at most two renderers per browser.
+    args: ['--disable-dev-shm-usage', '--deny-permission-prompts', '--disable-extensions', '--disable-sync',
+      '--disable-background-networking', '--disable-component-update', '--disable-default-apps', '--no-first-run',
+      '--mute-audio', '--renderer-process-limit=2', '--disable-features=Translate,MediaRouter,OptimizationHints'],
   };
   if (PROXY) opts.proxy = { server: PROXY };
   if (CHANNEL) opts.channel = CHANNEL;
@@ -1057,7 +1616,7 @@ async function launchView(s, mode) {
     delete opts.channel;
     ctx = await chromium.launchPersistentContext(dir, opts);
   }
-  await ctx.addInitScript(pageHelpers, PAGE_FONTS);
+  await ctx.addInitScript(pageHelpers);
   const page = ctx.pages()[0] || await ctx.newPage();
   // oy: CSS offset of the phone's view inside the (taller) viewport.
   const view = { mode, ctx, page, scale, margin, oy: 0, lastUrl: '' };
@@ -1196,6 +1755,7 @@ async function openSession(id, w, h, zoom, ov, res) {
   sessions.set(id, s);
   s.last = Date.now();
   if (s.mode === 'desk') s.deskUsed = s.last;
+  else s.mobUsed = s.last;
   return s;
 }
 
@@ -1264,7 +1824,6 @@ async function runAction(s, q) {
   const op = q.get('op') || '';
   const v = active(s);
   const page = v.page;
-  if (q.get('m') === 'p') await applyFont(page, q.get('fn') || '');
   // Page mode: the phone scrolls on its own; put the view where the phone's
   // is first, so its coordinates mean the same here.
   if (q.get('m') === 'p' && q.has('sy')) {
@@ -1614,8 +2173,9 @@ function addRecipes(s, recipes) {
 // Sheet size limit in phone px: what an old phone can decode at once.
 const SHEET_MAX_PX = 400000;
 
+// In the view in use, so the other one can be closed when idle.
 async function imgPage(s) {
-  const v = s.mob;
+  const v = active(s);
   if (!v.img) {
     const ip = { page: null, chain: Promise.resolve() };
     v.img = ip;
@@ -1659,7 +2219,7 @@ function packSheet(items, width, y0, scale) {
 
 async function renderImages(s, items, allPng, quality) {
   const ip = await imgPage(s);
-  const scale = s.mob.scale;
+  const scale = active(s).scale;
   // The tab renders at scale / res device px per CSS px; zoom makes up for
   // the lower resolution, so images still come out at phone px.
   const z = s.res;
@@ -1700,7 +2260,7 @@ async function renderImages(s, items, allPng, quality) {
 async function serveImages(res, q) {
   const s = sessions.get((q.get('id') || '').replace(/[^A-Za-z0-9_-]/g, ''));
   const keys = (q.get('k') || '').split(',').filter(Boolean).slice(0, 24);
-  const items = s && s.recipes && s.mob
+  const items = s && s.recipes && active(s)
     ? keys.map((k) => s.recipes.get(k) && { k, ...s.recipes.get(k) }).filter(Boolean) : [];
   if (s) s.last = Date.now();
   // Keys the server has no recipe for (expired, other session): the phone
@@ -1725,6 +2285,680 @@ async function serveImages(res, q) {
     'Cache-Control': 'no-store',
   });
   res.end(body);
+}
+
+// ---- Feed view (/f) ----
+//
+// The phone's own News Feed screen: the posts of m.facebook.com's feed as
+// data (__fbc.feedDump), which the phone lays out and draws itself. Posts
+// are kept per session in feed order, since the page drops the media of
+// posts scrolled far away. Taps on a post (like, open, author...) go to the
+// same spot in the real page.
+
+const FEED_MAX = 120;
+// Actions that open another page: the phone goes back to the browser view.
+const FEED_OPEN = new Set(['post', 'author', 'comment', 'share', 'media']);
+
+function atFeed(page) {
+  try {
+    const u = new URL(page.url());
+    return /(^|\.)facebook\.com$/.test(u.hostname) && (u.pathname === '/' || u.pathname === '/home.php');
+  } catch (e) {
+    return false;
+  }
+}
+
+async function dumpFeed(v) {
+  const t0 = Date.now();
+  const d = await v.page.evaluate(() => (window.__fbc ? window.__fbc.feedDump() : null)).catch(() => null);
+  if (Date.now() - t0 > 300) log('feedDump', Date.now() - t0, 'ms', d ? d.stories.length : 0, 'posts');
+  return d || { stories: [], recipes: {} };
+}
+
+// Post blocks in the page (cheap: no layout reading).
+function feedCount(v) {
+  return v.page.evaluate(() => (window.__fbc ? window.__fbc.feedCount() : 0)).catch(() => 0);
+}
+
+// Waits until the page has at least min post blocks, at most ms.
+async function waitPosts(v, min, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end && await feedCount(v) < min) await sleep(250);
+}
+
+// Merge a dump into s.feed (ordered posts). New posts go after the post that
+// precedes them in the dump; a known post keeps its media if the page has
+// dropped it meanwhile.
+function mergeFeed(s, stories) {
+  const list = s.feed || (s.feed = []);
+  let at = -1;
+  for (const p of stories) {
+    const i = list.findIndex((o) => o.k === p.k);
+    if (i >= 0) {
+      if (!p.media.length && list[i].media.length) p.media = list[i].media;
+      if (!p.avatar && list[i].avatar) p.avatar = list[i].avatar;
+      list[i] = p;
+      at = i;
+    } else {
+      list.splice(++at, 0, p);
+    }
+  }
+  if (list.length > FEED_MAX) list.splice(0, list.length - FEED_MAX);
+}
+
+// Posts -> lines for the phone, tab separated (sizes in phone px):
+//   P key flags avatarKey avatarSize title meta likes comments shares
+//   T text            body paragraph
+//   S text            text under the media (link title, page name)
+//   I key x y w h v   image; x, y within the post's media block; v = 1 video
+// flags: 1 liked, 2 the text is cut ("See more").
+function encodeFeed(s, list, scale) {
+  const r = (n) => Math.round(n * scale);
+  const em = emojiText(s);
+  const txt = (t) => em.text(String(t).replace(/[\t\r]/g, ' '));
+  const out = [];
+  for (const p of list) {
+    out.push(['P', p.k, (p.liked ? 1 : 0) | (p.more ? 2 : 0), p.avatar ? p.avatar.k : '', p.avatar ? r(p.avatar.w) : 0,
+      txt(p.title), txt(p.meta), p.likes, p.comments, p.shares].join('\t'));
+    for (const b of p.body) for (const line of txt(b).split('\n')) if (line.trim()) out.push('T\t' + line.trim());
+    for (const c of p.card) out.push('S\t' + txt(c).replace(/\n/g, ' '));
+    for (const m of p.media) out.push(['I', m.k, r(m.x), r(m.y), r(m.w), r(m.h), m.video ? 1 : 0].join('\t'));
+  }
+  return em.lines(scale).concat(out).join('\n');
+}
+
+// What the page of view v waits for: 'login', 'pin' or ''.
+function pageNeeds(v) {
+  return v.page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
+}
+
+async function feedAction(s, q) {
+  const op = q.get('op') || 'load';
+  if (s.mode !== 'mob') await switchMode(s, HOME);
+  const v = s.mob;
+  const page = v.page;
+  const out = {};
+  // Logged out: the phone shows this page (the browser view) to log in.
+  if (await pageNeeds(v) === 'login') {
+    out.need = 'login';
+    return out;
+  }
+  if (op === 'load') {
+    // Back from a post or profile opened from the feed: back through the
+    // history, so the feed is where it was (no reload, same posts).
+    for (let i = 0; i < 4 && !atFeed(page) && !q.get('fresh'); i++) {
+      const before = page.url();
+      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+      if (page.url() === before) break;
+      await sleep(200);
+    }
+    // Already on the feed: answer with what is there right away.
+    if (!atFeed(page) || q.get('fresh')) {
+      s.feed = null;
+      await page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('feed', e.message));
+      if (await pageNeeds(v) === 'login') {
+        out.need = 'login';
+        return out;
+      }
+    }
+    // The feed renders a moment after the document, a few posts at a time
+    // (also on a page that was just opened for a new session).
+    if (await feedCount(v) < 2) await waitPosts(v, 4, 6000);
+  } else if (op === 'more') {
+    // To the bottom (one step on the way, for lazy images), then answer as
+    // soon as new posts are in.
+    const before = await feedCount(v);
+    await page.evaluate(() => window.scrollBy(0, innerHeight)).catch(() => {});
+    await sleep(150);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)).catch(() => {});
+    await waitPosts(v, before + 1, 3000);
+    await sleep(200); // the rest of that batch
+  } else {
+    const t = await page.evaluate(([k, w, i]) => (window.__fbc ? window.__fbc.feedTarget(k, w, i) : null),
+      [q.get('k') || '', op, parseInt(q.get('i') || '0', 10)]).catch(() => null);
+    if (!t) {
+      out.err = 'Post not found, reload the feed';
+    } else {
+      await page.mouse.click(t.x, t.y);
+      s.clickAt = Date.now();
+      if (FEED_OPEN.has(op)) {
+        out.exit = true;
+        await settle(page, 800);
+        syncView(v);
+        return out;
+      }
+      await sleep(800); // like: the button turns blue
+    }
+  }
+  const d = await dumpFeed(v);
+  addRecipes(s, d.recipes);
+  mergeFeed(s, d.stories);
+  out.body = Buffer.from(encodeFeed(s, s.feed || [], v.scale), 'utf8');
+  return out;
+}
+
+async function serveFeed(res, q) {
+  const p = viewParams(q);
+  if (!p.id) {
+    res.writeHead(400);
+    return res.end('missing id');
+  }
+  const s = await getSession(p.id, p.w, p.h, p.zoom, p.ov, p.rs);
+  const job = s.chain.then(() => feedAction(s, q));
+  s.chain = job.catch(() => {}).then(() => s.switching);
+  const out = await job.catch((e) => {
+    log('feed', e.message);
+    return { err: e.message.split('\n')[0] };
+  });
+  const headers = { 'Cache-Control': 'no-store' };
+  if (out.err) headers['X-Feed-Err'] = encodeURIComponent(out.err);
+  if (out.exit) headers['X-Feed-Exit'] = '1';
+  if (out.need) headers['X-Need'] = out.need;
+  if (!out.body) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  const hash = crypto.createHash('md5').update(out.body).digest('hex').slice(0, 12);
+  headers['X-Hash'] = hash;
+  headers['X-Count'] = String((s.feed || []).length);
+  if (hash === q.get('hash')) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  headers['Content-Type'] = 'text/plain; charset=utf-8';
+  headers['Content-Length'] = out.body.length;
+  res.writeHead(200, headers);
+  res.end(out.body);
+}
+
+// ---- Emoji ----
+//
+// Phone fonts have no emoji. Each emoji (one grapheme: ZWJ sequences, flags,
+// keycaps included) gets a character of the Private Use Area (U+E000-U+F8FF)
+// for the session; the phone draws that character as a small image from
+// /img. A reply starts with "X char imgKey w h" lines for the ones it uses.
+const EMOJI_RE = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20E3/u;
+const EMOJI_PX = 18; // CSS px, square
+const GRAPHEMES = new Intl.Segmenter('en', { granularity: 'grapheme' });
+
+function emojiText(s) {
+  const used = new Set();
+  return {
+    // NFC text (the phone's fonts have precomposed Vietnamese letters) with
+    // emoji swapped for their characters.
+    text(t) {
+      t = t.normalize('NFC');
+      if (!EMOJI_RE.test(t)) return t;
+      const map = s.emoji || (s.emoji = new Map());
+      let out = '';
+      for (const { segment: g } of GRAPHEMES.segment(t)) {
+        if (!EMOJI_RE.test(g)) {
+          out += g;
+          continue;
+        }
+        let e = map.get(g);
+        if (!e) {
+          if (map.size >= 0x1900) {
+            out += g;
+            continue;
+          }
+          e = {
+            ch: String.fromCharCode(0xE000 + map.size),
+            k: 'e' + crypto.createHash('md5').update(g).digest('hex').slice(0, 11),
+            html: '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;' +
+              `font:${EMOJI_PX - 3}px/1 'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif">${g}</div>`,
+          };
+          map.set(g, e);
+        }
+        // The recipe again each time: old ones are dropped (MAX_RECIPES).
+        addRecipes(s, { [e.k]: { html: e.html, w: EMOJI_PX, h: EMOJI_PX, alpha: true } });
+        used.add(e);
+        out += e.ch;
+      }
+      return out;
+    },
+    lines(scale) {
+      const px = Math.round(EMOJI_PX * scale);
+      return [...used].map((e) => ['X', e.ch, e.k, px, px].join('\t'));
+    },
+  };
+}
+
+// ---- Reader (/p) ----
+//
+// The phone's own screen for every other page (a post and its comments,
+// profiles, notifications, groups, search, menus...): __fbc.readerDump's
+// rows in the mobile view, laid out by the phone. Presses and typing go to
+// the element with the item's key.
+
+// Rows -> lines (tab separated; sizes in phone px):
+//   U url title
+//   R indent                      a new row (items on one line of the page)
+//   T key size flags color bg text  text run; flags: 1 bold, 2 starts a new line; bg: the
+//                                   fill behind it ('' = none); key: what pressing it presses
+//   I img key w h flags           image (img: /img key); flags: 1 video, 2 starts a new line
+//   E key flags hint value        input; flags: 1 password, 2 starts a new line
+function encodeReader(s, d, scale) {
+  const r = (n) => Math.round(n * scale);
+  const em = emojiText(s);
+  const txt = (t) => em.text(String(t || '').replace(/[\t\r\n]/g, ' '));
+  const out = ['U\t' + txt(d.url) + '\t' + txt(d.title)];
+  for (const row of d.rows) {
+    out.push('R\t' + r(row.x));
+    for (const it of row.items) {
+      const nl = it.nl ? 2 : 0;
+      if (it.t === 'T') {
+        out.push(['T', it.a, r(it.fs), (it.bold ? 1 : 0) | nl, (it.col & 0xffffff).toString(16),
+          it.bg >= 0 ? it.bg.toString(16) : '', txt(it.s)].join('\t'));
+      } else if (it.t === 'I') {
+        out.push(['I', it.k, it.a, r(it.w), r(it.h), (it.video ? 1 : 0) | nl].join('\t'));
+      } else {
+        out.push(['E', it.a, (it.pass ? 1 : 0) | nl, txt(it.s), txt(it.v)].join('\t'));
+      }
+    }
+  }
+  return em.lines(scale).concat(out).join('\n');
+}
+
+const readerEval = (v, fn, arg) => v.page.evaluate(fn, arg).catch(() => null);
+
+async function readerAction(s, q) {
+  const op = q.get('op') || 'load';
+  const out = {};
+  if (s.mode !== 'mob') await switchMode(s, HOME);
+  const v = s.mob;
+  const page = v.page;
+  const before = page.url();
+  // A new page renders a moment after its document, then fills in (the
+  // comments of a post come after the post): wait until the page stops
+  // growing, at most 4 s.
+  const count = async () => (await readerEval(v, () => (window.__fbc ? window.__fbc.readerCount() : 0))) || 0;
+  const settleNew = async () => {
+    await settle(page, 300);
+    const end = Date.now() + 4000;
+    let last = -1;
+    let same = 0;
+    while (Date.now() < end) {
+      const n = await count();
+      same = n === last && n >= 3 ? same + 1 : 0;
+      if (same >= 2) break;
+      last = n;
+      await sleep(250);
+    }
+  };
+  // The feed just opened this page (a post, its comments): it may still
+  // be loading.
+  if (op === 'load' && Date.now() - (s.clickAt || 0) < 5000) await settleNew();
+  if (op === 'open') {
+    let u = (q.get('u') || HOME).trim();
+    if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u;
+    if (wantMode(u) === 'desk') {
+      out.open = 'chats';
+      return out;
+    }
+    await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('reader', e.message));
+    await settleNew();
+  } else if (op === 'press' || op === 'type' || op === 'video') {
+    const t = await readerEval(v, (k) => (window.__fbc ? window.__fbc.readerTarget(k) : null), q.get('k') || '');
+    if (!t) {
+      out.err = 'Not found, reload the page';
+    } else if (op === 'video') {
+      out.video = await startVideo(s, t.x, t.y);
+    } else {
+      await page.mouse.click(t.x, t.y);
+      s.clickAt = Date.now();
+      if (op === 'type') {
+        await sleep(150);
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Backspace');
+        const text = q.get('t') || '';
+        if (text) await page.keyboard.insertText(text);
+        // A one-line field (search) submits with Enter; a comment box has
+        // its own Send button.
+        if (q.get('enter') || t.line) await page.keyboard.press('Enter');
+      }
+      await settleNew();
+    }
+  } else if (op === 'back') {
+    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    if (page.url() === before) {
+      out.open = 'home'; // nothing to go back to
+      return out;
+    }
+    await settleNew();
+  } else if (op === 'more') {
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)).catch(() => {});
+    await sleep(1200);
+  }
+  // Pages the phone has its own screens for, or that wait for the user.
+  if (DESKTOP_URL.test(page.url()) || await isMessengerWall(page)) {
+    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    out.open = 'chats';
+    return out;
+  }
+  if (atFeed(page) && op !== 'load') {
+    out.open = 'home';
+    return out;
+  }
+  const need = await pageNeeds(v);
+  if (need) {
+    out.need = need;
+    return out;
+  }
+  const d = await readerEval(v, () => (window.__fbc ? window.__fbc.readerDump() : null));
+  if (!d) {
+    out.err = out.err || 'Page not readable';
+    return out;
+  }
+  addRecipes(s, d.recipes);
+  out.body = Buffer.from(encodeReader(s, d, v.scale), 'utf8');
+  out.end = d.end;
+  return out;
+}
+
+async function serveReader(res, q) {
+  const p = viewParams(q);
+  if (!p.id) {
+    res.writeHead(400);
+    return res.end('missing id');
+  }
+  const s = await getSession(p.id, p.w, p.h, p.zoom, p.ov, p.rs);
+  const job = s.chain.then(() => readerAction(s, q));
+  s.chain = job.catch(() => {}).then(() => s.switching);
+  const out = await job.catch((e) => {
+    log('reader', e.message);
+    return { err: e.message.split('\n')[0] };
+  });
+  const headers = { 'Cache-Control': 'no-store' };
+  if (out.err) headers['X-Err'] = encodeURIComponent(out.err);
+  if (out.need) headers['X-Need'] = out.need;
+  if (out.open) headers['X-Open'] = out.open;
+  if (out.video) {
+    if (out.video.key) headers['X-Video'] = out.video.key;
+    else headers['X-Video-Err'] = encodeURIComponent(out.video.err || 'no video');
+  }
+  if (!out.body) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  if (out.end) headers['X-End'] = '1';
+  const hash = crypto.createHash('md5').update(out.body).digest('hex').slice(0, 12);
+  headers['X-Hash'] = hash;
+  if (hash === q.get('hash')) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  headers['Content-Type'] = 'text/plain; charset=utf-8';
+  headers['Content-Length'] = out.body.length;
+  res.writeHead(200, headers);
+  res.end(out.body);
+}
+
+// ---- Chat screen (/m) ----
+//
+// The phone's own Messenger screen: the chat list and one thread as data
+// from the desktop view (__fbc.chatList / chatThread). A thread's messages
+// are kept per session in order, since the page keeps only those near its
+// view; opening a thread also scrolls up a little to bring in earlier ones.
+
+const CHAT_MAX = 300;
+
+function chatEval(v, fn, arg) {
+  return v.page.evaluate(fn, arg).catch(() => null);
+}
+
+const chatState = (v) => chatEval(v, () => (window.__fbc ? window.__fbc.chatState() : ''));
+
+async function waitChat(v, want, ms) {
+  const end = Date.now() + ms;
+  let st = await chatState(v);
+  while (st !== want && Date.now() < end) {
+    await sleep(250);
+    st = await chatState(v);
+  }
+  return st;
+}
+
+async function chatTap(v, what, k) {
+  const t = await chatEval(v, ([w, key]) => (window.__fbc ? window.__fbc.chatTarget(w, key) : null), [what, k]);
+  if (!t) return false;
+  await v.page.mouse.click(t.x, t.y);
+  return true;
+}
+
+async function dumpThread(s, v) {
+  const d = await chatEval(v, () => (window.__fbc ? window.__fbc.chatThread() : null));
+  if (!d) return null;
+  addRecipes(s, d.recipes);
+  const list = s.chat || (s.chat = []);
+  let at = -1;
+  for (const m of d.msgs) {
+    const i = list.findIndex((o) => o.k === m.k);
+    if (i >= 0) {
+      if (!m.media.some((x) => x.k) && list[i].media.some((x) => x.k)) m.media = list[i].media;
+      list[i] = m;
+      at = i;
+    } else {
+      list.splice(++at, 0, m);
+    }
+  }
+  if (list.length > CHAT_MAX) list.splice(0, list.length - CHAT_MAX);
+  return d;
+}
+
+// The chat list is virtualized too: rows far above the view leave the page.
+// Kept per session: a dump from the top of the list gives the newest chats
+// in order (a chat with a new message moves up) followed by the older ones
+// kept before; a dump further down is merged in place.
+function mergeChats(s, d) {
+  const old = s.chatRows || [];
+  if (d.top) {
+    const have = new Set(d.items.map((c) => c.k));
+    s.chatRows = d.items.concat(old.filter((c) => !have.has(c.k)));
+  } else {
+    const list = old.slice();
+    let at = -1;
+    for (const c of d.items) {
+      const i = list.findIndex((o) => o.k === c.k);
+      if (i >= 0) {
+        list[i] = c;
+        at = i;
+      } else {
+        list.splice(++at, 0, c);
+      }
+    }
+    s.chatRows = list;
+  }
+  if (s.chatRows.length > CHAT_MAX) s.chatRows.length = CHAT_MAX;
+  return { items: s.chatRows };
+}
+
+// Scrolls the thread up step by step, keeping every message passed, until
+// `want` more messages are kept or `steps` steps are done. At the top
+// Messenger loads earlier ones: wait for them.
+// Once the top was reached, every message down to the bottom has been kept,
+// so later calls start at the top (a poll may have scrolled to the bottom).
+async function olderMessages(s, v, want, steps) {
+  const before = (s.chat || []).length;
+  let what = s.chatTop ? 'top' : 'older';
+  for (let i = 0; i < steps && (s.chat || []).length - before < want; i++) {
+    const r = await chatEval(v, (w) => (window.__fbc ? window.__fbc.chatScroll(w) : null), what);
+    if (!r) break;
+    what = 'older';
+    if (r.top) s.chatTop = true;
+    const n = (s.chat || []).length;
+    await sleep(r.top ? 1200 : 300);
+    await dumpThread(s, v);
+    // At the top with nothing new: Messenger is still loading (or this is
+    // the start of the chat). The phone asks again later.
+    if (r.top && (s.chat || []).length === n) break;
+  }
+}
+
+// List -> lines (tab separated):
+//   C key flags avatarKey name snippet time    flags: 1 unread, 2 online
+// Thread -> lines:
+//   H title
+//   M key flags time sender text               flags: 1 mine; more lines of
+//   L text                                     the text follow as L
+//   A key                                      the sender's avatar beside it
+//   I key w h video                            an image (phone px; key may be empty)
+function encodeChat(s, list, scale) {
+  const em = emojiText(s);
+  const txt = (t) => em.text(String(t || '').replace(/[\t\r]/g, ' '));
+  const out = [];
+  if (list) {
+    for (const c of list.items) {
+      out.push(['C', c.k, (c.unread ? 1 : 0) | (c.online ? 2 : 0), c.avatar, txt(c.name), txt(c.snippet), txt(c.time)].join('\t'));
+    }
+    return em.lines(scale).concat(out).join('\n');
+  }
+  out.push('H\t' + txt(s.chatTitle));
+  for (const m of s.chat || []) {
+    const lines = txt(m.text).split('\n');
+    out.push(['M', m.k, m.mine ? 1 : 0, txt(m.time), txt(m.sender), lines[0]].join('\t'));
+    for (const l of lines.slice(1)) out.push('L\t' + l);
+    if (m.av) out.push('A\t' + m.av);
+    for (const x of m.media) out.push(['I', x.k, Math.round(x.w * scale), Math.round(x.h * scale), x.video ? 1 : 0].join('\t'));
+  }
+  return em.lines(scale).concat(out).join('\n');
+}
+
+async function chatAction(s, q) {
+  const op = q.get('op') || 'list';
+  if (s.mode !== 'desk') await switchMode(s, MESSENGER_URL);
+  const v = s.desk;
+  const page = v.page;
+  const out = {};
+  // Logged out or Messenger's PIN: the phone shows this page to the user.
+  const waitsForUser = async () => {
+    const need = await pageNeeds(v);
+    if (need) out.need = need;
+    return !!need;
+  };
+  if (!/\/messages\//.test(page.url())) {
+    await page.goto(MESSENGER_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('chat', e.message));
+    await waitChat(v, 'list', 8000);
+  }
+  if (await waitsForUser()) return out;
+  const toList = async () => {
+    if (await chatState(v) === 'thread' && await chatTap(v, 'back')) {
+      if (await waitChat(v, 'list', 3000) === 'list') return;
+    }
+    if (await chatState(v) !== 'list') {
+      await page.goto(MESSENGER_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('chat', e.message));
+      await waitChat(v, 'list', 8000);
+    }
+  };
+  if (op === 'list') {
+    await toList();
+    s.chat = null;
+  } else if (op === 'more') {
+    // Down the list until chats not kept yet show up (Messenger loads more
+    // as its list reaches the end), at most 3 s.
+    const kept = new Set((s.chatRows || []).map((c) => c.k));
+    const fresh = () => chatEval(v, (keys) => (window.__fbc ? window.__fbc.chatKeys().filter((k) => !keys.includes(k)).length : 0),
+      Array.from(kept));
+    const end = Date.now() + 3000;
+    do {
+      await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('list'));
+      await sleep(300);
+    } while (Date.now() < end && !await fresh());
+  } else if (op === 'open') {
+    const k = q.get('k') || '';
+    if (await chatState(v) === 'thread') await toList();
+    // Threads open by a tap on their row: loaded by URL at this width,
+    // Messenger shows the list. A row far down may have left the page:
+    // look for it from the top.
+    const hasRow = () => chatEval(v, (key) => !!window.__fbc && window.__fbc.chatKeys().includes(key), k);
+    if (!await hasRow()) {
+      await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('listtop'));
+      await sleep(300);
+      for (let i = 0; i < 15 && !await hasRow(); i++) {
+        await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('list'));
+        await sleep(400);
+      }
+    }
+    if (!await chatTap(v, 'open', k)) {
+      out.err = 'Chat not found, reload the list';
+    } else {
+      s.chat = [];
+      s.chatTop = false;
+      s.chatKey = k;
+      s.chatTitle = q.get('t') || '';
+      await waitChat(v, 'thread', 8000);
+      await sleep(600);
+      await dumpThread(s, v);
+      // Bring in some earlier messages, then back to the newest.
+      await olderMessages(s, v, 10, 4);
+      await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('bottom'));
+      await sleep(300);
+    }
+  } else if (op === 'older') {
+    await olderMessages(s, v, 15, 10);
+  } else if (op === 'send') {
+    const t = q.get('t') || '';
+    if (t && await chatTap(v, 'composer')) {
+      await page.keyboard.insertText(t);
+      await page.keyboard.press('Enter');
+      await sleep(900);
+      await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('bottom'));
+    } else if (t) {
+      out.err = 'No message box';
+    }
+  }
+  if (await waitsForUser()) return out;
+  // op=poll and everything else: the screen as it is now. The phone at the
+  // newest messages (b=1): the page too, so new ones are rendered.
+  if (op === 'poll' && q.get('b') && s.chat) {
+    await chatEval(v, () => window.__fbc && window.__fbc.chatScroll('bottom'));
+    await sleep(100);
+  }
+  const st = await chatState(v);
+  if (st === 'thread' && s.chat) {
+    await dumpThread(s, v);
+    out.screen = 'thread';
+    out.body = Buffer.from(encodeChat(s, null, v.scale), 'utf8');
+  } else {
+    const d = await chatEval(v, () => (window.__fbc ? window.__fbc.chatList() : null)) || { items: [], recipes: {}, top: false };
+    addRecipes(s, d.recipes);
+    out.screen = 'list';
+    out.body = Buffer.from(encodeChat(s, mergeChats(s, d), v.scale), 'utf8');
+  }
+  return out;
+}
+
+async function serveChat(res, q) {
+  const p = viewParams(q);
+  if (!p.id) {
+    res.writeHead(400);
+    return res.end('missing id');
+  }
+  const s = await getSession(p.id, p.w, p.h, p.zoom, p.ov, p.rs);
+  const job = s.chain.then(() => chatAction(s, q));
+  s.chain = job.catch(() => {}).then(() => s.switching);
+  const out = await job.catch((e) => {
+    log('chat', e.message);
+    return { err: e.message.split('\n')[0] };
+  });
+  const headers = { 'Cache-Control': 'no-store' };
+  if (out.err) headers['X-Chat-Err'] = encodeURIComponent(out.err);
+  if (out.need) headers['X-Need'] = out.need;
+  if (!out.body) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  headers['X-Chat'] = out.screen;
+  const hash = crypto.createHash('md5').update(out.screen).update(out.body).digest('hex').slice(0, 12);
+  headers['X-Hash'] = hash;
+  if (hash === q.get('hash')) {
+    res.writeHead(204, headers);
+    return res.end();
+  }
+  headers['Content-Type'] = 'text/plain; charset=utf-8';
+  headers['Content-Length'] = out.body.length;
+  res.writeHead(200, headers);
+  res.end(out.body);
 }
 
 async function isMessengerWall(page) {
@@ -2125,6 +3359,21 @@ function serveVideo(req, res, key) {
 
 // ---- HTTP ----
 
+// The phone and its view, from the query of /a and /f.
+function viewParams(q) {
+  return {
+    id: (q.get('id') || '').replace(/[^A-Za-z0-9_-]/g, ''),
+    w: Math.min(Math.max(parseInt(q.get('w') || '240', 10), 96), 1080),
+    h: Math.min(Math.max(parseInt(q.get('h') || '320', 10), 96), 1920),
+    zoom: Math.min(Math.max(parseInt(q.get('z') || '100', 10), 25), 200),
+    // Overscan % of the view height added above and below (0 = old clients).
+    ov: Math.min(Math.max(parseInt(q.get('ov') || '0', 10), 0), 100),
+    // Render resolution divisor: 1 = full, 1.5 = 2/3, 2 = half per side
+    // (slow phones; the phone scales the image back up).
+    rs: { 2: 2, 1.5: 1.5 }[q.get('r')] || 1,
+  };
+}
+
 async function handle(req, res) {
   const u = new URL(req.url, 'http://x');
   const q = u.searchParams;
@@ -2139,6 +3388,9 @@ async function handle(req, res) {
   const vm = /^\/v\/([0-9a-f]+)\.mp4$/.exec(u.pathname);
   if (vm) return serveVideo(req, res, vm[1]);
   if (u.pathname === '/img') return serveImages(res, q);
+  if (u.pathname === '/f') return serveFeed(res, q);
+  if (u.pathname === '/m') return serveChat(res, q);
+  if (u.pathname === '/p') return serveReader(res, q);
   if (u.pathname === '/vs') {
     res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
     return res.end(videoStatus(q.get('k') || ''));
@@ -2147,7 +3399,7 @@ async function handle(req, res) {
     res.writeHead(404);
     return res.end();
   }
-  const id = (q.get('id') || '').replace(/[^A-Za-z0-9_-]/g, '');
+  const { id, w, h, zoom, ov, rs } = viewParams(q);
   if (!id) {
     res.writeHead(400);
     return res.end('missing id');
@@ -2159,16 +3411,8 @@ async function handle(req, res) {
     res.writeHead(204);
     return res.end();
   }
-  const w = Math.min(Math.max(parseInt(q.get('w') || '240', 10), 96), 1080);
-  const h = Math.min(Math.max(parseInt(q.get('h') || '320', 10), 96), 1920);
-  const zoom = Math.min(Math.max(parseInt(q.get('z') || '100', 10), 25), 200);
   const fmt = q.get('f') === 'png' ? 'png' : 'jpeg';
   const quality = Math.min(Math.max(parseInt(q.get('q') || '75', 10), 10), 95);
-  // Overscan % of the view height added above and below (0 = old clients).
-  const ov = Math.min(Math.max(parseInt(q.get('ov') || '0', 10), 0), 100);
-  // Render resolution divisor: 1 = full, 1.5 = 2/3, 2 = half per side
-  // (slow phones; the phone scales the image back up).
-  const rs = { 2: 2, 1.5: 1.5 }[q.get('r')] || 1;
   const lastHash = q.get('hash') || '';
 
   const s = await getSession(id, w, h, zoom, ov, rs);
@@ -2192,8 +3436,6 @@ async function handle(req, res) {
     let pg = null;
     let same = false;
     let dumpKey = null;
-    // The action may have opened a new document: font first, then dump.
-    if (pageMode) await applyFont(page, q.get('fn') || '');
     if (pageMode && (q.get('op') !== 'move' || out.scrolled)) {
       // Nothing changed since the dump the phone has: no need to dump again.
       const key = await page.evaluate(() => (window.__fbc ? window.__fbc.dumpKey() : null)).catch(() => null);
@@ -2231,11 +3473,12 @@ async function handle(req, res) {
     }
     const pressed = (q.get('op') === 'click' || q.get('op') === 'activate') && !out.offer;
     const input = pressed ? await focusedInput(page) : null;
-    return { img, text, pg, input, out, focus, url: page.url(), oy: Math.round(v.oy * v.scale) };
+    const state = await page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
+    return { img, text, pg, input, out, focus, state, url: page.url(), oy: Math.round(v.oy * v.scale) };
   });
   // A view switch started by this request finishes before the next one.
   s.chain = job.catch(() => {}).then(() => s.switching);
-  const { img, text, pg, input, out, focus, url, oy } = await job;
+  const { img, text, pg, input, out, focus, state, url, oy } = await job;
 
   let hash = lastHash;
   if (pg) {
@@ -2250,6 +3493,9 @@ async function handle(req, res) {
     'X-Oy': String(oy),
     // "x,y,w,h" of the D-pad focus in the image, device px ("" = none).
     'X-Focus': focus,
+    // 'login' / 'pin': the page waits for the user (the phone's own screens
+    // send it here for that), 'ok' otherwise.
+    'X-State': state || 'ok',
     'Cache-Control': 'no-store',
   };
   if (input) {
@@ -2316,6 +3562,15 @@ async function reapIdle() {
         s.desk = null;
         await d.ctx.close().catch(() => {});
         log('messenger browser closed (idle)', id);
+      }).catch(() => {});
+    } else if (s.mob && s.mode === 'desk' && !s.switching && now - (s.mobUsed || 0) > MOB_IDLE_MS) {
+      s.chain = s.chain.then(async () => {
+        if (!s.mob || s.mode !== 'desk' || s.switching || Date.now() - (s.mobUsed || 0) <= MOB_IDLE_MS) return;
+        const m = s.mob;
+        s.mob = null;
+        s.feed = null;
+        await m.ctx.close().catch(() => {});
+        log('facebook browser closed (idle)', id);
       }).catch(() => {});
     }
   }

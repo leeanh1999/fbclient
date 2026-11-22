@@ -29,10 +29,9 @@ import javax.microedition.rms.RecordStore;
 public class FbMidlet extends MIDlet
         implements CommandListener, ItemCommandListener, ItemStateListener {
 
-    // Default from the FbClient-Server JAD/manifest attribute; can be
-    // changed in Settings (saved in RMS).
-    String defaultServer;
-    volatile String server;
+    // The render server, asked for on the first start and changed in
+    // Settings (saved in RMS). There is no default: "" until set.
+    volatile String server = "";
 
     // BlackBerry routes HTTP through BIS/MDS unless the URL says otherwise;
     // a LAN server needs WiFi or direct TCP.
@@ -82,14 +81,20 @@ public class FbMidlet extends MIDlet
     BrowserCanvas canvas;
     Net net;
     ImageLoader loader;
+    /** The News Feed screen, made on first use. */
+    volatile FeedCanvas feed;
+    /** The Messenger screen, made on first use. */
+    volatile ChatCanvas chat;
+    /** The screen for every other page, made on first use. */
+    volatile ReaderCanvas reader;
 
     private Form settingsForm;
     private TextField tfServer, tfKey, tfZoom, tfQuality;
-    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize, cgFont;
+    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize;
     int textFont = TextFrame.SIZE_DEFAULT;
-    // Sharp (1-bit) font; default set in loadSettings: sharp on Nokia,
-    // smooth on BlackBerry (its screen blends antialiased text well).
-    boolean sharpFont;
+    // Former font setting (bitmap fonts, gone): still in the saved record so
+    // the layout of RMS stays the same; unused.
+    private boolean sharpFont;
     private FormButton btnSave;
     private TextBox textBox;
     // BlackBerry text input: a Form with one field and a Send button, since
@@ -98,7 +103,7 @@ public class FbMidlet extends MIDlet
     private Form inputForm;
     private TextField tfInput;
     private FormButton btnSend;
-    private int textMode; // 0 = type into field, 1 = URL
+    private int textMode; // 0 field, 1 URL, 2 chat message, 3 reader input, 4 server address
 
     // Only one command besides Cancel: with two or more, S60 (Nokia E6)
     // hides them behind an "Options" soft key. "Submit with Enter" is a
@@ -124,16 +129,11 @@ public class FbMidlet extends MIDlet
 
     protected void startApp() {
         if (started) {
-            display.setCurrent(canvas);
+            display.setCurrent(screen());
             return;
         }
         started = true;
         display = Display.getDisplay(this);
-        defaultServer = getAppProperty("FbClient-Server");
-        if (defaultServer == null || defaultServer.length() == 0) {
-            defaultServer = "http://127.0.0.1:8080";
-        }
-        server = defaultServer;
         String platform = System.getProperty("microedition.platform");
         blackberry = platform != null
                 && (platform.startsWith("RIM") || platform.indexOf("BlackBerry") >= 0);
@@ -145,10 +145,28 @@ public class FbMidlet extends MIDlet
         }
         net = new Net(this);
         loader = new ImageLoader(this);
+        Emoji.loader = loader;
         net.start();
         loader.start();
-        display.setCurrent(canvas);
-        net.refresh();
+        if (server.length() == 0) {
+            askServer(); // first start: where is the server?
+        } else {
+            begin();
+        }
+    }
+
+    /**
+     * Starts on the app's own feed screen; the browser view only when the
+     * server says the user must log in (or enter Messenger's PIN).
+     */
+    private void begin() {
+        openFeed();
+    }
+
+    /** The server address box (first start): no app without a server. */
+    private void askServer() {
+        textMode = 4;
+        showInput("Server address", server.length() > 0 ? server : "http://", TextField.URL);
     }
 
     protected void pauseApp() {
@@ -162,6 +180,15 @@ public class FbMidlet extends MIDlet
     void shutdown() {
         if (canvas != null) {
             canvas.dispose();
+        }
+        if (feed != null) {
+            feed.dispose();
+        }
+        if (chat != null) {
+            chat.dispose();
+        }
+        if (reader != null) {
+            reader.dispose();
         }
         if (loader != null) {
             loader.stop();
@@ -217,21 +244,31 @@ public class FbMidlet extends MIDlet
 
     // ---- Menu ----
 
-    /** Runs an item chosen in the on-screen menu (see MenuOverlay). */
+    /**
+     * Runs an item chosen in a menu (see MenuOverlay): the browser view's,
+     * or the feed or chat screen's (which has Home, Messenger, URL, Reload,
+     * Settings and Exit).
+     */
     void menuAction(int action) {
+        Displayable cur = display.getCurrent();
         switch (action) {
             case MenuOverlay.TYPE: showTextInput("", false); break;
             case MenuOverlay.ENTER: net.action("op=key&k=Enter"); break;
             case MenuOverlay.URL: showUrlInput(); break;
-            case MenuOverlay.MESSENGER:
-                if (!inMessenger()) {
-                    canvas.showSplash(BrowserCanvas.SPLASH_MESSENGER);
-                }
-                net.action("op=nav&u=" + Net.urlEncode("https://www.facebook.com/messages/"));
-                break;
+            case MenuOverlay.MESSENGER: openChat(); break;
             case MenuOverlay.VIDEO: canvas.toast("Loading video..."); net.action("op=video"); break;
             case MenuOverlay.FORWARD: net.action("op=fwd"); break;
-            case MenuOverlay.RELOAD: net.action("op=reload"); break;
+            case MenuOverlay.RELOAD:
+                if (cur == feed && feed != null) {
+                    feed.load(true);
+                } else if (cur == chat && chat != null) {
+                    chat.reload();
+                } else if (cur == reader && reader != null) {
+                    reader.reload();
+                } else {
+                    net.action("op=reload");
+                }
+                break;
             case MenuOverlay.SETTINGS: showSettings(); break;
             case MenuOverlay.EXIT: exit(); break;
             case MenuOverlay.HOME: home(); break;
@@ -239,12 +276,167 @@ public class FbMidlet extends MIDlet
         }
     }
 
-    /** Facebook home; from Messenger with the splash right away. */
-    void home() {
-        if (inMessenger()) {
-            canvas.showSplash(BrowserCanvas.SPLASH_FACEBOOK);
+    // Which screen is in front (back to it after a text box or Settings).
+    private static final int FRONT_BROWSER = 0;
+    private static final int FRONT_FEED = 1;
+    private static final int FRONT_CHAT = 2;
+    private static final int FRONT_READER = 3;
+    private volatile int front = FRONT_BROWSER;
+
+    Displayable screen() {
+        if (front == FRONT_FEED && feed != null) {
+            return feed;
         }
-        net.action("op=home");
+        if (front == FRONT_CHAT && chat != null) {
+            return chat;
+        }
+        if (front == FRONT_READER && reader != null) {
+            return reader;
+        }
+        return canvas;
+    }
+
+    /**
+     * The screen for any other page: url (null: the page the server has open
+     * now, e.g. a post just pressed in the feed).
+     */
+    void openReader(String url) {
+        if (reader == null) {
+            reader = new ReaderCanvas(this);
+            if (blackberry) {
+                reader.addCommand(cmdPageBack);
+                reader.setCommandListener(this);
+            }
+        }
+        assist = ASSIST_NONE;
+        front = FRONT_READER;
+        net.paused = true;
+        display.setCurrent(reader);
+        reader.load(url);
+    }
+
+    /** X-Open from a screen: "home" (the feed) or "chats". */
+    void openScreen(String what) {
+        if ("chats".equals(what)) {
+            openChat();
+        } else {
+            openFeed();
+        }
+    }
+
+    // Reader input being edited (its key).
+    private String readerKey;
+
+    /** Text box for the reader's input k (value, its hint, password). */
+    void showReaderInput(String k, String value, String hint, boolean password) {
+        textMode = 3;
+        readerKey = k;
+        showInput(hint.length() > 0 ? hint : "Text", value, password ? TextField.PASSWORD : TextField.ANY);
+    }
+
+    // The browser view is shown so the user can log in (ASSIST_LOGIN) or
+    // enter Messenger's PIN (ASSIST_PIN); once the server's page no longer
+    // waits for that (X-State: ok), the app goes back to its own screens.
+    static final int ASSIST_NONE = 0;
+    static final int ASSIST_LOGIN = 1;
+    static final int ASSIST_PIN = 2;
+    volatile int assist;
+    volatile long assistAt;
+
+    /**
+     * The app's own Messenger screen. Like the feed, the browser view stops
+     * polling meanwhile (its page on the server becomes Messenger).
+     */
+    void openChat() {
+        if (chat == null) {
+            chat = new ChatCanvas(this);
+            if (blackberry) {
+                chat.addCommand(cmdPageBack);
+                chat.setCommandListener(this);
+            }
+        }
+        assist = ASSIST_NONE;
+        front = FRONT_CHAT;
+        net.paused = true;
+        display.setCurrent(chat);
+        chat.loadList();
+    }
+
+    /** Text input for a message in the open chat (to). */
+    void showChatInput(String to) {
+        textMode = 2;
+        showInput(to.length() > 0 ? "To " + to : "Message", "", TextField.ANY);
+    }
+
+    /**
+     * The app's own News Feed screen (home). The browser view stops polling
+     * while it is shown: its page on the server becomes the feed.
+     */
+    void openFeed() {
+        assist = ASSIST_NONE;
+        front = FRONT_FEED;
+        if (feed == null) {
+            feed = new FeedCanvas(this);
+            if (blackberry) {
+                feed.addCommand(cmdPageBack);
+                feed.setCommandListener(this);
+            }
+        }
+        net.paused = true;
+        display.setCurrent(feed);
+        feed.load(false);
+    }
+
+    /**
+     * The browser view (the server's page as it is), on a fresh page: for a
+     * post opened from the feed, a URL, logging in, Messenger's PIN.
+     */
+    void showBrowser() {
+        front = FRONT_BROWSER;
+        net.paused = false;
+        canvas.resetPage();
+        display.setCurrent(canvas);
+        net.resetHash();
+        net.refresh();
+    }
+
+    /** The server's page waits for the user: "login" or "pin" (from /f, /m). */
+    void needUser(String what) {
+        if (assist != ASSIST_NONE) {
+            return;
+        }
+        assist = "pin".equals(what) ? ASSIST_PIN : ASSIST_LOGIN;
+        assistAt = System.currentTimeMillis();
+        showBrowser();
+        canvas.toast(assist == ASSIST_PIN ? "Enter your Messenger PIN" : "Log in to Facebook");
+    }
+
+    /** X-State of a browser view reply: back to the own screens when done. */
+    void pageState(String state) {
+        int a = assist;
+        if (a == ASSIST_NONE || state == null) {
+            return;
+        }
+        if ("ok".equals(state) && System.currentTimeMillis() - assistAt > 3000) {
+            display.callSerially(new UiTask(this, UiTask.ASSIST_DONE, null, a == ASSIST_PIN));
+        }
+    }
+
+    /** Logged in / PIN entered: the screen that asked for it again. */
+    void assistDone(boolean pin) {
+        if (assist == ASSIST_NONE) {
+            return;
+        }
+        if (pin) {
+            openChat();
+        } else {
+            openFeed();
+        }
+    }
+
+    /** Home: the feed screen. */
+    void home() {
+        openFeed();
     }
 
     /** The current page is Messenger (the server's desktop view). */
@@ -343,7 +535,7 @@ public class FbMidlet extends MIDlet
         } catch (IllegalArgumentException e) {
             tfInput = new TextField(null, "", 256, constraints);
         }
-        btnSend = new FormButton(this, textMode == 1 ? "Go" : "Send");
+        btnSend = new FormButton(this, textMode == 1 ? "Go" : textMode == 4 ? "OK" : "Send");
         btnSend.setLayout(Item.LAYOUT_CENTER | Item.LAYOUT_NEWLINE_BEFORE);
         f.append(tfInput);
         f.append(btnSend);
@@ -410,8 +602,29 @@ public class FbMidlet extends MIDlet
         }
         textBox = null;
         inputForm = null;
-        display.setCurrent(canvas);
-        if (textMode == 1) {
+        if (textMode == 4) {
+            String srv = normalizeServer(s);
+            if (srv.length() == 0 || srv.equals("http://")) {
+                askServer(); // still nothing
+                return;
+            }
+            server = srv;
+            saveSettings();
+            begin();
+            return;
+        }
+        display.setCurrent(screen());
+        if (textMode == 3) {
+            if (reader != null && readerKey != null) {
+                reader.type(readerKey, s);
+            }
+        } else if (textMode == 1 && front != FRONT_BROWSER) {
+            openReader(s.trim()); // a URL typed on an own screen opens in the reader
+        } else if (textMode == 2) {
+            if (chat != null) {
+                chat.send(s);
+            }
+        } else if (textMode == 1) {
             net.action("op=nav&u=" + Net.urlEncode(s.trim()));
         } else {
             net.action("op=type&t=" + Net.urlEncode(s));
@@ -425,7 +638,7 @@ public class FbMidlet extends MIDlet
 
     void showSettings() {
         settingsForm = new Form("Settings");
-        tfServer = new TextField("Server (empty = default)", server, 128, TextField.URL);
+        tfServer = new TextField("Server", server, 128, TextField.URL);
         tfKey = new TextField("Access key", key, 64, TextField.ANY);
         tfZoom = new TextField("Zoom %", String.valueOf(zoom), 3, TextField.NUMERIC);
         tfQuality = new TextField("JPEG quality", String.valueOf(quality), 2, TextField.NUMERIC);
@@ -454,9 +667,6 @@ public class FbMidlet extends MIDlet
         cgTextSize = new ChoiceGroup("Text size", Choice.EXCLUSIVE, TextFrame.SIZE_NAMES, null);
         cgTextSize.setSelectedIndex(textFont, true);
         settingsForm.append(cgTextSize);
-        cgFont = new ChoiceGroup("Font", Choice.EXCLUSIVE, new String[] {"Sharp", "Smooth"}, null);
-        cgFont.setSelectedIndex(sharpFont ? 0 : 1, true);
-        settingsForm.append(cgFont);
         if (blackberry) {
             // BlackBerry ignores a StringItem button's default command.
             btnSave = new FormButton(this, "Save");
@@ -485,7 +695,10 @@ public class FbMidlet extends MIDlet
         String oldServer = server;
         int oldConn = bbConn;
         try {
-            server = normalizeServer(tfServer.getString());
+            String srv = normalizeServer(tfServer.getString());
+            if (srv.length() > 0) {
+                server = srv; // empty: keep the one there is
+            }
             key = tfKey.getString().trim();
             if (cgBbConn != null) {
                 bbConn = cgBbConn.getSelectedIndex();
@@ -501,8 +714,6 @@ public class FbMidlet extends MIDlet
             res = cgRes.getSelectedIndex();
             textFont = cgTextSize.getSelectedIndex();
             TextFrame.setTextFont(textFont);
-            sharpFont = cgFont.getSelectedIndex() == 0;
-            TextFrame.setSharp(sharpFont);
             TextFrame.setZoom(zoom);
             saveSettings();
             canvas.toast(!server.equals(oldServer) || bbConn != oldConn
@@ -510,19 +721,27 @@ public class FbMidlet extends MIDlet
         } catch (Throwable t) {
             canvas.toast("Settings error: " + t);
         }
-        display.setCurrent(canvas);
-        net.resetHash();
-        net.refresh();
+        display.setCurrent(screen());
+        if (net.paused) {
+            // Text size / font may have changed: lay the screen out again.
+            Displayable sc = screen();
+            if (sc instanceof ImageSource) {
+                ((ImageSource) sc).repaint();
+            }
+        } else {
+            net.resetHash();
+            net.refresh();
+        }
     }
 
-    /** "10.0.0.5:8080/" -> "http://10.0.0.5:8080"; empty -> build default. */
+    /** "10.0.0.5:8080/" -> "http://10.0.0.5:8080"; empty stays empty. */
     private String normalizeServer(String s) {
         s = s.trim();
         while (s.endsWith("/")) {
             s = s.substring(0, s.length() - 1);
         }
         if (s.length() == 0) {
-            return defaultServer;
+            return "";
         }
         if (s.indexOf("://") < 0) {
             s = "http://" + s;
@@ -539,13 +758,33 @@ public class FbMidlet extends MIDlet
             }
             return;
         }
+        if (d == feed && feed != null) {
+            if (c == cmdPageBack) {
+                feed.backPressed();
+            }
+            return;
+        }
+        if (d == chat && chat != null) {
+            if (c == cmdPageBack) {
+                chat.backPressed();
+            }
+            return;
+        }
+        if (d == reader && reader != null) {
+            if (c == cmdPageBack) {
+                reader.backPressed();
+            }
+            return;
+        }
         if (d == textBox || d == inputForm) {
             if (c == cmdOk || c == cmdSendBack) {
                 textSubmitted();
+            } else if (textMode == 4) {
+                askServer(); // Cancel: the app needs a server first
             } else {
                 textBox = null;
                 inputForm = null;
-                display.setCurrent(canvas);
+                display.setCurrent(screen());
             }
         } else if (d == settingsForm) {
             // Some phones (BlackBerry) deliver the Save button's item
@@ -554,7 +793,7 @@ public class FbMidlet extends MIDlet
                 settingsSubmitted();
             } else {
                 settingsForm = null;
-                display.setCurrent(canvas);
+                display.setCurrent(screen());
             }
         }
     }
@@ -641,7 +880,6 @@ public class FbMidlet extends MIDlet
         }
         TextFrame.setTextFont(textFont);
         TextFrame.setZoom(zoom);
-        TextFrame.setSharp(sharpFont);
         if (clientId.length() == 0) {
             clientId = randomId();
             saveSettings();
@@ -660,8 +898,7 @@ public class FbMidlet extends MIDlet
             out.writeInt(quality);
             out.writeInt(SETTINGS_VERSION);
             out.writeBoolean(false); // former live view setting
-            // Empty = follow the build's default server.
-            out.writeUTF(server.equals(defaultServer) ? "" : server);
+            out.writeUTF(server);
             out.writeInt(bbConn);
             out.writeInt(overscan);
             out.writeBoolean(frameAuto);

@@ -142,12 +142,21 @@ class BrowserCanvas extends Canvas implements Runnable {
     public void run() {
         while (alive) {
             try {
-                Thread.sleep(TICK_MS);
+                // Hidden (the app's own screens are in front): just wait.
+                Thread.sleep(visible ? TICK_MS : 250);
             } catch (InterruptedException e) {
                 // continue
             }
-            tick();
+            if (visible) {
+                tick();
+            }
         }
+    }
+
+    private volatile boolean visible;
+
+    protected void showNotify() {
+        visible = true;
     }
 
     /** Height of the page area sent to the server (screen minus toolbar). */
@@ -203,6 +212,25 @@ class BrowserCanvas extends Canvas implements Runnable {
         }
         repaint();
         pageMoved();
+    }
+
+    /**
+     * Forget the page shown (back from the feed screen, whose actions left
+     * the server on another page): the next reply starts from the server's
+     * view, with the start-up splash until it arrives.
+     */
+    synchronized void resetPage() {
+        page = null;
+        image = null;
+        focus = null;
+        pageSy = 0;
+        pageTarget = 0;
+        pendingDy = 0;
+        shownDy = 0;
+        rangeAsked = null;
+        moreAsked = -1;
+        olderAsked = -1;
+        repaint();
     }
 
     /** View position for requests in page mode, -1 otherwise. */
@@ -830,6 +858,7 @@ class BrowserCanvas extends Canvas implements Runnable {
     }
 
     protected void hideNotify() {
+        visible = false;
         holdDir = 0;
         pressed = false;
         barPress = -1;

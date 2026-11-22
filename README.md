@@ -8,8 +8,8 @@
 ## Install the app
 Download `FbClient.jad` + `FbClient.jar` from the
 [latest release](https://github.com/leeanh1999/fbclient/releases/latest). Release builds are
-preverified (class 45 + StackMap) for real phones (Nokia E6 / S60) and point at
-`http://10.15.188.183:5080` (`client/prod.conf`).
+preverified (class 45 + StackMap) for real phones (Nokia E6 / S60). On its first start the app asks
+for the server address (e.g. `http://192.168.1.10:5080`); Menu → Settings → Server changes it.
 
 ## Deploy on Synology NAS (Docker)
 1. Container Manager → Project → Create, paste [`docker-compose.yml`](docker-compose.yml)
@@ -38,7 +38,7 @@ npm start                         # listens on :8080
 Env vars: `PORT` (8080), `PROXY` (optional, local runs only, e.g. `socks5://host:port` where
 Facebook is blocked; empty = direct; ignored with `NODE_ENV=production`, i.e. in Docker),
 `TOKEN` (access key, empty = none),
-`HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (5; minutes before an idle phone's browsers close), `DESK_IDLE_MIN` (2; minutes the Messenger browser stays open unused once the phone is back on Facebook), `CHANNEL` (chrome; empty = bundled Chromium),
+`HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (5; minutes before an idle phone's browsers close), `DESK_IDLE_MIN` (2; minutes the Messenger browser stays open unused once the phone is back on Facebook), `MOB_IDLE_MIN` (2; likewise the Facebook browser while the phone stays in its chat screen), `CHANNEL` (chrome; empty = bundled Chromium),
 `YTDLP` (yt-dlp), `DATA_DIR` (`server/data`; `/data` in Docker).
 
 Each phone gets two persistent Chrome profiles in `<DATA_DIR>/profiles/<clientId>-{mob,desk}`:
@@ -98,9 +98,8 @@ is its scroll position, and everything around it is pinned. Reply: `text/plain` 
 `X-Page: top,bottom,height,bg[,paneX,paneY,paneW,paneH]` (stretch sent, page height, background
 colour, and the pane's box on screen, to which the phone clips the scrolling content) and `X-Sy`
 (where the view is now; differs from `sy` when the server moved it). `X-Focus` is in document px.
-`fn=s|r`: the font the phone draws text with (Roboto; `s`: sharp 1-bit, `r`: smooth). The
-server lays the page out with the same font (`server/fonts/`), so text lines are as wide as on the
-phone. Without `fn` the page keeps its own fonts. A tap on a pinned bar (`position: fixed`) lands
+The phone draws text with its own fonts, which can be wider or narrower than the page's (a run
+following another on the same line starts after it). A tap on a pinned bar (`position: fixed`) lands
 on that bar, however the view is scrolled. Text in the body is NFC.
 One command per line, tab separated, phone px:
 
@@ -155,7 +154,8 @@ images for the first view, then only new images while scrolling.
 | prevvideo | | the video played before (the session keeps the last 50), as `video` |
 | bye | | the app is exiting (Menu → Exit): close this phone's session now; `204`, no session is created |
 
-Responses: `200` image, `204` unchanged (same `hash`); headers `X-Url`, `X-Hash`, `X-Oy`,
+Responses: `200` image, `204` unchanged (same `hash`); headers `X-State` (`login`: a login, checkpoint or
+2FA page; `pin`: Messenger asks for the PIN of end-to-end encrypted chats; `ok`), `X-Url`, `X-Hash`, `X-Oy`,
 `X-Focus: x,y,w,h` (D-pad focus in image px, drawn by the phone, so moving it needs no new frame).
 `X-Loading: messenger` / `facebook`: the request moves between the mobile view and the desktop
 (Messenger) view (menu, Messenger tab, Back from Messenger's start, Home, a link), which takes
@@ -172,21 +172,124 @@ saved in RMS since a change relaunches the browser on the server): in the mobile
 to mouse wheel for inner scroll areas). Off in the desktop/Messenger view.
 `GET /vs?k=` → `dl <pct>` / `ready` / `err <msg>`; `GET /v/<k>.mp4` → MP4 with Range support.
 
+### The app's own screens
+The app starts in its feed screen (`/f`); Home opens it, Messenger opens the chat screen
+(`/m`), and every other page (a post and its comments, profiles, notifications, groups, search,
+a typed URL) opens in the reader screen (`/p`). All three have a menu (Home, Messenger, URL,
+Reload, Settings, Exit). The browser view (`/a`) is left for logging in and Messenger's PIN (`/f`,
+`/m` or `/p` answer `X-Need: login` / `pin`; the phone shows the page until `/a` says
+`X-State: ok`, then goes back), and for key 9 in the reader (the same page as before). Each screen
+uses one of the session's two browsers; the other closes after `DESK_IDLE_MIN` / `MOB_IDLE_MIN`,
+and `/img` renders in the one in use.
+
+### Reader screen (`/p`)
+`__fbc.readerDump` turns the page into rows in reading order: items whose boxes overlap
+vertically share a row. Text runs carry size, weight, colour and the fill behind them (a button);
+images their `/img` key; inputs their hint and value. Whatever can be pressed (link, button,
+`[data-action-id]`, input) gets a key (`data-fbc-k` on the element). The phone (`ReaderCanvas`,
+`ReaderRow`) flows a row's runs together, wrapped at spaces, with a leading avatar in a column of
+its own and big images on lines of their own. `GET /p?<view params>&hash=&op=`:
+
+| op | params | action |
+|---|---|---|
+| load | | the page the mobile view has open (after a post was pressed in the feed) |
+| open | u | open URL u (a Messenger URL answers `X-Open: chats`) |
+| press | k | press the element with key k |
+| type | k, t | type t into input k (a one-line input then gets Enter) |
+| video | k | play the video k in the phone's player (`X-Video`) |
+| back | | browser Back (`X-Open: home` when that is the feed or there is nothing before) |
+| more | | scroll to the bottom so lists load more |
+
+Body lines (tab separated, phone px): `U url title`; `R indent` (a new row); `T key size flags
+color bg text` (flags 1 = bold, bg empty = none); `I img key w h flags` (1 = video); `E key flags
+hint value` (1 = password). Flag 2 on any item: the page breaks the line before it (a commenter's
+name above the comment). Items keep document order within a row; consecutive runs with the
+same fill share one box (a comment bubble). Bars pinned to the screen (position fixed/sticky) come
+first (top ones) or last (bottom ones, the comment box). Text in `aria-hidden` blocks is read
+(Facebook hides visible names and counts from screen readers); screen-reader-only text (1 px) is
+not. Headers: `X-Hash`, `X-End` (the page ends in view), `X-Open`, `X-Need`,
+`X-Err`, `X-Video` / `X-Video-Err`. After a press or typing the phone asks again twice, 0.8 s
+apart, for changes that come a moment later.
+
+### Emoji
+Phone fonts have no emoji. In `/f`, `/m` and `/p` text each emoji (a grapheme: ZWJ sequences,
+flags, keycaps included) is replaced by a character of the Private Use Area (U+E000-U+F8FF), one
+per emoji for the session, and the reply starts with an `X char imgKey w h` line for each one it
+uses. The image (`/img` key) is the emoji drawn by Chromium at 18 CSS px (Docker:
+`fonts-noto-color-emoji`). The phone's `TextFont` measures and draws those characters as the
+images, so all its text shows emoji. Page mode (`/a`) draws them into images itself.
+
+### Feed screen (`/f`)
+The app's own News Feed screen (`FeedCanvas`): the posts as data, laid out and drawn
+by the phone. m.facebook.com's feed is a Bloks "weblite" screen that gets new posts over a
+WebSocket (no GraphQL/XHR to intercept), so the server reads the posts from the page
+(`__fbc.feedDump`): each `[data-tracking-duration-id]` block with a round avatar and a bold title
+line is a post; its parts are found by layout. Posts are kept per session in feed order (the page
+drops the media of posts far away). `GET /f?<same view params as /a>&hash=&op=`:
+
+| op | params | action |
+|---|---|---|
+| load | fresh=1 (optional) | open the feed in the mobile view (reload it with `fresh`, or when the page is elsewhere) |
+| more | | scroll the page down so the feed loads more posts |
+| like | k | press the post's Like button, then return the posts again |
+| post / author / comment / share / media | k, i (media index) | press that part of the post; `X-Feed-Exit: 1`, the phone goes back to the browser view |
+
+Body (`200`, `text/plain` UTF-8; `204` when the same `hash`), one tab-separated line each, sizes in
+phone px:
+
+| line | fields | |
+|---|---|---|
+| `P` | key flags avatarKey avatarSize title meta likes comments shares | a post; flags 1 = liked, 2 = text cut ("See more") |
+| `T` | text | a line of the body |
+| `S` | text | text under the media (shared link title, page name) |
+| `I` | key x y w h video | an image in the post's media block (`/img` key), video = 1 draws a play button |
+
+Headers: `X-Hash`, `X-Count` (posts kept), `X-Feed-Err` (URL-encoded message), `X-Feed-Exit`.
+
+### Chat screen (`/m`)
+The app's own Messenger screen (`ChatCanvas`), from the desktop (Messenger) view.
+At phone width Messenger shows either the chat list (`[role=grid]` rows linking to
+`/messages/t/<id>` or `/messages/e2ee/t/<id>`) or one thread (`[role=log]`, a virtualized list of
+`[role=article]` messages). A message's `aria-label` reads "… <time>, <sender>: <text>"; own
+messages are told by position (right side, no grey bubble). Threads open by a tap on their row
+(loaded by URL at this width, Messenger shows the list). Images in end-to-end encrypted chats are
+`blob:` URLs, so the page draws them into a JPEG for the recipe. A thread's messages are kept per
+session in order (the page keeps only those near its view). `GET /m?<view params>&hash=&op=`:
+
+| op | params | action |
+|---|---|---|
+| list | | the chat list (Back from a thread) |
+| more | | scroll the list down for more chats |
+| open | k (chat key), t (its name) | open the chat; also scrolls up twice for earlier messages |
+| older | | scroll the thread up for earlier messages |
+| send | t | type t in the message box and press Enter |
+| poll | | the screen as it is (the phone polls: a thread every 3 s, the list every 8 s) |
+
+Body (`200`; `204` when the same `hash`), `X-Chat: list` or `thread`, `X-Chat-Err`:
+
+| line | fields | |
+|---|---|---|
+| `C` | key flags avatarKey name snippet time | a chat; flags 1 = unread, 2 = online |
+| `H` | title | the open thread's name |
+| `M` | key flags time sender text | a message; flags 1 = own; its other lines follow as `L text` |
+| `I` | key w h video | an image of the message before (phone px; empty key = not available) |
+While the feed screen is shown the browser view stops polling; leaving it, the phone forgets its
+page and asks for a fresh one.
+
 ## Client (MIDP 2.0 / CLDC 1.1)
 Phone build (JDK 11+ and Maven; ECJ + ProGuard preverify, as in CI) → `client/build/`:
 ```sh
-bash client/build.sh [dev|prod]
+bash client/build.sh
 ```
 Offline build for emulators only (JDK only, no downloads; class version 48, not preverified)
 → `client/dist/`:
 ```sh
-sh client/build-emu.sh [dev|prod]
+sh client/build-emu.sh
 ```
 
-Default server URL is set at build time (JAD/manifest attribute `FbClient-Server`) and can be
-changed in Menu → Settings → Server (empty = back to the build default; `http://` is added if missing):
-- `dev` (default): `http://127.0.0.1:8080`
-- `prod`: `SERVER_URL` from env or `client/prod.conf` (`http://10.15.188.183:5080`)
+No server address is built in. On the first start the app shows a box for it (it stays until an
+address is given; `http://` is added if missing); it is saved in RMS and Menu → Settings → Server
+changes it.
 
 BlackBerry (detected from `microedition.platform`): every connection gets a transport suffix chosen
 in Settings → Connection: WiFi (`;interface=wifi`, default), mobile data (`;deviceside=true`) or

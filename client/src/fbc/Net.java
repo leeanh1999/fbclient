@@ -42,6 +42,8 @@ class Net implements Runnable {
 
     volatile String currentUrl = "";
     volatile boolean busy;
+    /** The feed screen is shown: no polling, queued refreshes are dropped. */
+    volatile boolean paused;
     /** Busy with something the user asked for (not background polling). */
     volatile boolean userBusy;
 
@@ -106,6 +108,9 @@ class Net implements Runnable {
             synchronized (queue) {
                 while (running && queue.isEmpty()) {
                     long wait = 0;
+                    if (paused) {
+                        pollUntil = 0;
+                    }
                     if (pollUntil > 0) {
                         wait = nextPollAt - System.currentTimeMillis();
                         if (wait <= 0) {
@@ -126,6 +131,9 @@ class Net implements Runnable {
                 if (req == null) {
                     req = (String) queue.elementAt(0);
                     queue.removeElementAt(0);
+                }
+                if (paused && REFRESH.equals(req)) {
+                    continue;
                 }
                 // A focus move changes nothing on the page: no burst of
                 // follow-up frames (each one costs a screenshot on the server).
@@ -192,9 +200,6 @@ class Net implements Runnable {
         // Page mode: the page as drawing commands, scrolled here (the
         // server falls back to text + image or a screenshot where it can't).
         sb.append("&m=p");
-        // The font the phone draws page text with: the server lays the page
-        // out with it too, so lines are as wide there as here.
-        sb.append("&fn=").append(TextFrame.isSharp() ? 's' : 'r');
         sb.append(app.keyParam("&"));
         return sb.toString();
     }
@@ -246,6 +251,8 @@ class Net implements Runnable {
             int textLen = xText == null ? 0 : FbMidlet.parseInt(xText, 0);
             String xPage = hc.getHeaderField("X-Page");
             String xSy = hc.getHeaderField("X-Sy");
+            // Logging in / Messenger PIN in this view: done once "ok".
+            app.pageState(hc.getHeaderField("X-State"));
 
             boolean changed = false;
             if (code == HttpConnection.HTTP_OK && xPage != null) {

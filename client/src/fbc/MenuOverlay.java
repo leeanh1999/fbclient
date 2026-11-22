@@ -3,8 +3,10 @@ package fbc;
 import javax.microedition.lcdui.Graphics;
 
 /**
- * Bottom-sheet menu drawn over the page: dimmed background, grid of round
- * icon tiles. Works with keys (arrows + FIRE) and touch.
+ * Bottom-sheet menu drawn over the page (or the app's own feed and chat
+ * screens): dimmed background, grid of round icon tiles. Works with keys
+ * (arrows + FIRE) and touch. Home opens the feed screen, Messenger the chat
+ * screen.
  */
 class MenuOverlay {
 
@@ -50,6 +52,13 @@ class MenuOverlay {
     // Layout (recomputed on paint)
     private int cols, rows, tileW, tileH, panelY, iconD;
 
+    /** The menu of the app's own screens (feed, chats). */
+    static final int[] SCREEN_ITEMS = {HOME, MESSENGER, URL, RELOAD, SETTINGS, EXIT};
+
+    MenuOverlay(int[] items) {
+        this.items = items;
+    }
+
     MenuOverlay(boolean withHome) {
         // Devices without the touch footer also need Home in the menu.
         int[] base = {TYPE, ENTER, URL, MESSENGER, VIDEO, FORWARD, RELOAD, SETTINGS, EXIT};
@@ -82,6 +91,32 @@ class MenuOverlay {
 
     int selectedAction() {
         return items[sel];
+    }
+
+    /**
+     * A key while the menu is open: closes it (soft keys, *, #, Escape,
+     * Backspace; returns -1), picks the selected item (FIRE, 5, Enter;
+     * returns its action, menu closed) or moves the selection (returns -1).
+     * ga is the key's game action.
+     */
+    int key(int k, int ga) {
+        if (k == -6 || k == -21 || k == 21 || k == 57345 || k == -7 || k == -22 || k == 22 || k == 57346
+                || k == 42 || k == 35 || k == 27 || k == 8) {
+            hide();
+            return -1;
+        }
+        if (k == 53 || ga == 8 || k == 10 || k == 13) { // 5, FIRE, Enter
+            hide();
+            return selectedAction();
+        }
+        switch (ga) {
+            case 1: move(0, -1); break;  // UP
+            case 6: move(0, 1); break;   // DOWN
+            case 2: move(-1, 0); break;  // LEFT
+            case 5: move(1, 0); break;   // RIGHT
+            default: break;
+        }
+        return -1;
     }
 
     void move(int dx, int dy) {

@@ -32,13 +32,13 @@ yt-dlp through a proxy (e.g. where Facebook is blocked). Production/Docker alway
 
 Client (`client/`, run from repo root, Git Bash on Windows):
 ```sh
-bash client/build.sh [dev|prod]      # real phones -> client/build/ (JDK 11+, Maven downloads ECJ+ProGuard)
-sh client/build-emu.sh [dev|prod]    # emulators only -> client/dist/ (JDK + python, offline, stubs)
+bash client/build.sh                 # real phones -> client/build/ (JDK 11+, Maven downloads ECJ+ProGuard)
+sh client/build-emu.sh               # emulators only -> client/dist/ (JDK + python, offline, stubs)
 OUT=dist-new sh client/build-emu.sh  # when the emulator locks dist/FbClient.jar
-VERSION=1.2.3 bash client/build.sh prod
+VERSION=1.2.3 bash client/build.sh
 ```
-`dev` points at `http://127.0.0.1:8080`; `prod` uses `SERVER_URL` env or `client/prod.conf`. The URL
-is the default in the manifest attribute `FbClient-Server` (users can override it in Settings).
+The jar carries no server address: on its first start the app asks for it (a text box until one
+is given), saves it in RMS, and Settings changes it later.
 `client/res/` (app icon) is packed into the jar root. Every `Connector.open`/`createPlayer` URL must go
 through `app.connUrl()` (BlackBerry transport suffix).
 
@@ -73,12 +73,17 @@ unchanged or 6 s pass) · `TextFrame` (text mode: draws the server's text lines 
 fonts over a text-free screenshot) · `PageView` (page mode: parses and paints drawing commands,
 scrolled locally) · `ImageLoader` (page mode images from `/img`, own thread, cached by key) · `FocusRing` (D-pad
 outline) · `VideoView` (native MMAPI player)
-· `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: Roboto bitmap
-fonts in `client/res/fonts/`, smooth and sharp 1-bit sets (`r`/`b` + `s`), tinted per colour and
-blended with the known background; Settings > Text size / Font). The server lays pages out with
-the same font (`server/fonts/`, `fn=` param), so lines are as wide as on the phone. Regenerate
-both with `python client/tools/mkfont.py` (Pillow, freetype-py, fonttools) and keep its `SIZES` in
-sync with `TextFrame.BMP_SIZES`.
+· `FeedCanvas` / `FeedPost` (own News Feed screen: posts from `/f` as data, laid out and drawn
+here; the start screen and Home) · `ChatCanvas` / `ChatItem` (own Messenger screen from `/m`:
+chat list and thread, polled; Messenger) · `ReaderCanvas` / `ReaderRow` (every other page from
+`/p`: rows of text runs, images, inputs, flowed and drawn here). The browser view (`BrowserCanvas`)
+is only for logging in and Messenger's PIN (`X-Need` / `X-State`, `FbMidlet.assist`), plus key 9 in
+the reader · `ImageSource` (those screens' images for `ImageLoader`)
+· `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: the phone's
+own fonts, SMALL / MEDIUM / LARGE picked from the CSS px size by `TextFrame`, one size up or down
+with Settings > Text size) · `Emoji` (phone fonts lack emoji: the server sends each as a Private
+Use Area character plus an `X char key w h` line; `TextFont` draws those characters as `/img`
+images, so every screen shows emoji).
 
 ## Server architecture (`server/server.js`)
 
@@ -98,6 +103,15 @@ sync with `TextFrame.BMP_SIZES`.
   scrolling pane is the document) puts the server's view at the phone's `sy` before each action.
   `/img` renders recipes in an extra tab of the session's mobile browser (`imgPage`, left alone by
   the popup handler) into PNG/JPEG sheets. `__fbc.dumpKey` lets polls skip unchanged dumps. Check changes by rendering a dump next to a screenshot of the same state.
+- Feed screen (`/f`, `feedAction`): `__fbc.feedDump` reads posts from m.facebook.com's Bloks
+  feed by layout (`[data-tracking-duration-id]` blocks: avatar + bold title, body, media, button
+  row); keys are content hashes (the attribute changes on scroll). `__fbc.feedTarget` finds where
+  to tap for like/open. The feed arrives over a WebSocket, so there is no API to intercept.
+- Reader (`/p`, `readerAction`): `__fbc.readerDump` reads any page into rows of items; pressable
+  elements get `data-fbc-k` keys that `op=press/type/video` act on (`__fbc.readerTarget`).
+- Chat screen (`/m`, `chatAction`): `__fbc.chatList` / `chatThread` read Messenger's desktop
+  view at phone width (message text from each `[role=article]`'s aria-label, own messages by
+  position). Threads must be opened by tapping their row; a URL shows the list at this width.
 - Responses use a hash so the client gets `204` when the frame is unchanged. Overscan (`ov`)
   renders a taller image in the mobile view, and `X-Oy` gives the view offset.
 - Video: the server never plays video in Chromium. It finds the MP4 URL, downloads it with yt-dlp

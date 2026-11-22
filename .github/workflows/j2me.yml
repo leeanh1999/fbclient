@@ -43,9 +43,9 @@ jobs:
           fi
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      # The release build points at the NAS (client/prod.conf).
-      - name: Build jar + jad (prod)
-        run: VERSION=${{ steps.info.outputs.version }} bash client/build.sh prod
+      # No server in the jar: the app asks for it on its first start.
+      - name: Build jar + jad
+        run: VERSION=${{ steps.info.outputs.version }} bash client/build.sh
 
       # Real S60 phones only run CLDC classes: version 45 with StackMap
       # (preverified). Anything newer fails to install without a reason.
@@ -57,8 +57,7 @@ jobs:
           done
           if find . -name '*$*.class' | grep -q .; then echo "nested classes found (KEmulator fails on them)"; exit 1; fi
           javap -v fbc/Net.class | grep -q StackMap || { echo "not preverified"; exit 1; }
-          grep -q '^FbClient-Server: http://' META-INF/MANIFEST.MF
-          echo "All classes are version 45 with StackMap"; grep '^FbClient-Server' META-INF/MANIFEST.MF
+          echo "All classes are version 45 with StackMap"
 
       - uses: actions/upload-artifact@v4
         with:
