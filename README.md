@@ -25,9 +25,11 @@ roughly 0.6–1 GB RAM while active.
 
 CI (`.github/workflows`): `docker.yml` builds the arm64 image natively on GitHub's ARM runner
 (`ubuntu-24.04-arm`, ~2–3 min; QEMU took 10+), smoke-tests it and pushes it to GHCR;
-`j2me.yml` builds the app, checks the bytecode and replaces `FbClient.jar/.jad` in the latest
-release (no new release per change). Each runs only for its own part: `server/**` → image,
-`client/**` → app; docs-only commits build nothing.
+`j2me.yml` builds the app and checks the bytecode. Each runs only for its own part: `server/**` →
+image, `client/**` → app; docs-only commits build nothing. A push that changes both the app and
+the server makes a new release (`v<a>.<b+1>.<run>`) with the app; one that changes only the app
+replaces `FbClient.jar/.jad` in the latest release; one that changes only the server makes no
+release.
 
 ## Server
 Requires Google Chrome (H.264 codecs for Facebook video) and `yt-dlp` on PATH (video playback).

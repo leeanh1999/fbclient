@@ -44,8 +44,9 @@ through `app.connUrl()` (BlackBerry transport suffix).
 
 Docker / deploy: `docker build server`; the published image is `ghcr.io/leeanh1999/fbclient`
 (**arm64 only**, Synology NAS, host port 5080). `deploy.sh` runs on the NAS. A push to main that
-changes `client/**` rebuilds the app and replaces `FbClient.jar/.jad` in the latest GitHub release
-(no new release; MIDlet-Version = that release's a.b + the run number).
+changes `client/**` rebuilds the app: if it also changes `server/**` it makes a new GitHub release
+(`v<a>.<b+1>.<run number>`), otherwise it replaces `FbClient.jar/.jad` in the latest release
+(MIDlet-Version = that release's a.b + the run number, always increasing).
 
 Rooted Android phone (arm64, e.g. Redmi Note 5) instead of the NAS: no Docker there, so
 `android/pull-image.py` pulls the published image from GHCR and unpacks it as a rootfs, and

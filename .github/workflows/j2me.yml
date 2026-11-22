@@ -1,9 +1,10 @@
 name: Build J2ME app
 
 # Only when the app changes (server changes build the image, docker.yml).
-# A push to main replaces FbClient.jar/.jad in the latest release: no new
-# release per change, and phones (android/files.py, the release page) always
-# get the newest app from the same place.
+# A push to main that changes the app and the server makes a new release;
+# one that changes only the app replaces FbClient.jar/.jad in the latest
+# release. Phones (android/files.py, the release page) always get the newest
+# app from the latest release.
 on:
   push:
     branches: [main]
@@ -30,6 +31,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # to see what the push changed
+
+      # Did this push change the server too? (Then it makes a new release.)
+      - name: What changed
+        id: changed
+        run: |
+          before='${{ github.event.before }}'
+          if [ "${{ github.event_name }}" = push ] && git cat-file -e "$before^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$before" "${{ github.sha }}")
+          else
+            files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
+          fi
+          echo "$files"
+          if [ "${{ github.event_name }}" = push ] && echo "$files" | grep -q '^server/'; then
+            echo "release=new" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=replace" >> "$GITHUB_OUTPUT"
+          fi
 
       # ECJ 3.26 and ProGuard 7 run on JDK 11+; Maven only downloads tools.
       - uses: actions/setup-java@v4
@@ -39,17 +59,23 @@ jobs:
           cache: maven
           cache-dependency-path: client/tools/pom.xml
 
-      # MIDlet-Version (a.b.c): the latest release's a.b (v2.0.1 -> 2.0) and
-      # the run number, so each build is newer than the one phones have.
+      # MIDlet-Version a.b.<run number>, so each build is newer than the one
+      # phones have: a.b of the latest release (v2.0.1 -> 2.0) when its files
+      # are replaced; a new release raises b (2.1) and is tagged v2.1.<run>.
       - name: Version
         id: info
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.changed.outputs.release }}
         run: |
           tag=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
           base=${tag#v}
           base=${base%.*}
           [[ "$base" =~ ^[0-9]+\.[0-9]+$ ]] || base=1.0
+          if [ "$RELEASE" = new ] || [ -z "$tag" ]; then
+            base="${base%.*}.$(( ${base#*.} + 1 ))"
+            tag=""
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$base.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
@@ -77,9 +103,9 @@ jobs:
             client/build/FbClient.jar
             client/build/FbClient.jad
 
-      # The latest release gets the new files (same names, replaced). Only a
-      # repo without any release gets one made.
-      - name: Replace the app in the latest release
+      # App only: the latest release gets the new files (same names,
+      # replaced). App and server (or no release yet): a new release.
+      - name: Publish the app
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,5 +117,6 @@ jobs:
             echo "Replaced the app in release $TAG (MIDlet-Version $VERSION)"
           else
             gh release create "v$VERSION" client/build/FbClient.jar client/build/FbClient.jad \
-              --title "v$VERSION" --notes "FbClient app (J2ME)."
+              --target "${{ github.sha }}" --title "v$VERSION" --generate-notes
+            echo "New release v$VERSION (app and server changed)"
           fi
