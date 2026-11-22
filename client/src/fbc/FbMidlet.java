@@ -412,9 +412,14 @@ public class FbMidlet extends MIDlet
     }
 
     /** X-State of a browser view reply: back to the own screens when done. */
-    void pageState(String state) {
+    void pageState(String state, boolean feedReady) {
         int a = assist;
         if (a == ASSIST_NONE || state == null) {
+            return;
+        }
+        // Logging in is over only once the feed shows posts: the pages on the
+        // way (codes, approvals, "save login") must stay in front until then.
+        if (a == ASSIST_LOGIN && !feedReady) {
             return;
         }
         if ("ok".equals(state) && System.currentTimeMillis() - assistAt > 3000) {

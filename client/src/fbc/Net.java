@@ -252,7 +252,7 @@ class Net implements Runnable {
             String xPage = hc.getHeaderField("X-Page");
             String xSy = hc.getHeaderField("X-Sy");
             // Logging in / Messenger PIN in this view: done once "ok".
-            app.pageState(hc.getHeaderField("X-State"));
+            app.pageState(hc.getHeaderField("X-State"), "1".equals(hc.getHeaderField("X-Feed-Ready")));
 
             boolean changed = false;
             if (code == HttpConnection.HTTP_OK && xPage != null) {

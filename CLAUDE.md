@@ -43,8 +43,9 @@ is given), saves it in RMS, and Settings changes it later.
 through `app.connUrl()` (BlackBerry transport suffix).
 
 Docker / deploy: `docker build server`; the published image is `ghcr.io/leeanh1999/fbclient`
-(**arm64 only**, Synology NAS, host port 5080). `deploy.sh` runs on the NAS. Pushing a `v*` tag
-attaches `FbClient.jar/.jad` to the GitHub release.
+(**arm64 only**, Synology NAS, host port 5080). `deploy.sh` runs on the NAS. A push to main that
+changes `client/**` rebuilds the app and replaces `FbClient.jar/.jad` in the latest GitHub release
+(no new release; MIDlet-Version = that release's a.b + the run number).
 
 Rooted Android phone (arm64, e.g. Redmi Note 5) instead of the NAS: no Docker there, so
 `android/pull-image.py` pulls the published image from GHCR and unpacks it as a rootfs, and
@@ -126,4 +127,5 @@ English strings.
 - Commit messages: short Vietnamese without diacritics (e.g. `Phim dieu huong nhanh hon, ...`).
 - `.sh` files and `Dockerfile` must stay LF (`.gitattributes`); CRLF breaks the container.
 - Never commit `server/data/` (Facebook logins per phone).
-- Docker CI skips commits that only touch `client/**` or `*.md`.
+- CI by path: `server/**` builds only the Docker image (`docker.yml`), `client/**` only the app
+  (`j2me.yml`); docs-only commits build nothing.

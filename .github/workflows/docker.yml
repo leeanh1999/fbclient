@@ -1,18 +1,19 @@
 name: Build Docker image
 
+# Only when the server changes: commits touching the J2ME app (j2me.yml),
+# the Android scripts or docs don't need a new image (the NAS would pull and
+# restart for nothing).
 on:
   push:
     branches: [main]
-    tags: ['v*']
-    # Commits touching only the J2ME app or docs don't need a new image
-    # (the NAS would pull and restart for nothing). Tags ignore paths.
-    paths-ignore:
-      - 'client/**'
-      - 'android/**'
-      - '.github/workflows/j2me.yml'
-      - '**/*.md'
+    paths:
+      - 'server/**'
+      - '.github/workflows/docker.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/docker.yml'
   workflow_dispatch:
 
 # A newer push makes the running build pointless.

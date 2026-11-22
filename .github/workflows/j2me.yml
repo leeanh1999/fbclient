@@ -1,9 +1,12 @@
 name: Build J2ME app
 
+# Only when the app changes (server changes build the image, docker.yml).
+# A push to main replaces FbClient.jar/.jad in the latest release: no new
+# release per change, and phones (android/files.py, the release page) always
+# get the newest app from the same place.
 on:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - 'client/**'
       - '.github/workflows/j2me.yml'
@@ -13,6 +16,11 @@ on:
       - 'client/**'
       - '.github/workflows/j2me.yml'
   workflow_dispatch:
+
+# A newer push makes the running build pointless.
+concurrency:
+  group: j2me-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -31,16 +39,19 @@ jobs:
           cache: maven
           cache-dependency-path: client/tools/pom.xml
 
-      # MIDlet-Version only accepts a.b.c: use the tag (v1.2.3) when there
-      # is one, otherwise 1.0.<run number>.
+      # MIDlet-Version (a.b.c): the latest release's a.b (v2.0.1 -> 2.0) and
+      # the run number, so each build is newer than the one phones have.
       - name: Version
         id: info
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          fi
+          tag=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          base=${tag#v}
+          base=${base%.*}
+          [[ "$base" =~ ^[0-9]+\.[0-9]+$ ]] || base=1.0
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$base.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       # No server in the jar: the app asks for it on its first start.
@@ -66,10 +77,19 @@ jobs:
             client/build/FbClient.jar
             client/build/FbClient.jad
 
-      - name: Attach to release (on v* tags)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            client/build/FbClient.jar
-            client/build/FbClient.jad
+      # The latest release gets the new files (same names, replaced). Only a
+      # repo without any release gets one made.
+      - name: Replace the app in the latest release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.info.outputs.tag }}
+          VERSION: ${{ steps.info.outputs.version }}
+        run: |
+          if [ -n "$TAG" ]; then
+            gh release upload "$TAG" client/build/FbClient.jar client/build/FbClient.jad --clobber
+            echo "Replaced the app in release $TAG (MIDlet-Version $VERSION)"
+          else
+            gh release create "v$VERSION" client/build/FbClient.jar client/build/FbClient.jad \
+              --title "v$VERSION" --notes "FbClient app (J2ME)."
+          fi

@@ -25,7 +25,9 @@ roughly 0.6–1 GB RAM while active.
 
 CI (`.github/workflows`): `docker.yml` builds the arm64 image natively on GitHub's ARM runner
 (`ubuntu-24.04-arm`, ~2–3 min; QEMU took 10+), smoke-tests it and pushes it to GHCR;
-`j2me.yml` builds the prod app, checks the bytecode and, on `v*` tags, attaches it to the release.
+`j2me.yml` builds the app, checks the bytecode and replaces `FbClient.jar/.jad` in the latest
+release (no new release per change). Each runs only for its own part: `server/**` → image,
+`client/**` → app; docs-only commits build nothing.
 
 ## Server
 Requires Google Chrome (H.264 codecs for Facebook video) and `yt-dlp` on PATH (video playback).
@@ -155,7 +157,8 @@ images for the first view, then only new images while scrolling.
 | bye | | the app is exiting (Menu → Exit): close this phone's session now; `204`, no session is created |
 
 Responses: `200` image, `204` unchanged (same `hash`); headers `X-State` (`login`: a login, checkpoint or
-2FA page; `pin`: Messenger asks for the PIN of end-to-end encrypted chats; `ok`), `X-Url`, `X-Hash`, `X-Oy`,
+2FA page, or no session cookie `c_user` yet; `pin`: Messenger asks for the PIN of end-to-end encrypted
+chats; `ok`), `X-Feed-Ready` (`1`: the mobile view is on the feed and it shows posts), `X-Url`, `X-Hash`, `X-Oy`,
 `X-Focus: x,y,w,h` (D-pad focus in image px, drawn by the phone, so moving it needs no new frame).
 `X-Loading: messenger` / `facebook`: the request moves between the mobile view and the desktop
 (Messenger) view (menu, Messenger tab, Back from Messenger's start, Home, a link), which takes
@@ -178,7 +181,9 @@ The app starts in its feed screen (`/f`); Home opens it, Messenger opens the cha
 a typed URL) opens in the reader screen (`/p`). All three have a menu (Home, Messenger, URL,
 Reload, Settings, Exit). The browser view (`/a`) is left for logging in and Messenger's PIN (`/f`,
 `/m` or `/p` answer `X-Need: login` / `pin`; the phone shows the page until `/a` says
-`X-State: ok`, then goes back), and for key 9 in the reader (the same page as before). Each screen
+`X-State: ok`, and for a login also `X-Feed-Ready: 1`, so the verification pages after the password
+(codes, approvals, "save login") stay in front; `/f` also asks for it when the home page sends it
+elsewhere), and for key 9 in the reader (the same page as before). Each screen
 uses one of the session's two browsers; the other closes after `DESK_IDLE_MIN` / `MOB_IDLE_MIN`,
 and `/img` renders in the one in use.
 

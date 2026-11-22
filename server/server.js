@@ -2367,9 +2367,19 @@ function encodeFeed(s, list, scale) {
   return em.lines(scale).concat(out).join('\n');
 }
 
+// Logged in: the browser has Facebook's session cookie (c_user). Pages
+// on the way to it (checkpoints, codes, approvals, "save login") have many
+// shapes, so this is what says the login is done, not the page.
+async function loggedIn(v) {
+  const cookies = await v.ctx.cookies('https://www.facebook.com').catch(() => []);
+  return cookies.some((c) => c.name === 'c_user' && c.value);
+}
+
 // What the page of view v waits for: 'login', 'pin' or ''.
-function pageNeeds(v) {
-  return v.page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
+async function pageNeeds(v) {
+  const need = await v.page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
+  if (need) return need;
+  return await loggedIn(v) ? '' : 'login';
 }
 
 async function feedAction(s, q) {
@@ -2396,7 +2406,10 @@ async function feedAction(s, q) {
     if (!atFeed(page) || q.get('fresh')) {
       s.feed = null;
       await page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('feed', e.message));
-      if (await pageNeeds(v) === 'login') {
+      await settle(page, 300);
+      // Sent somewhere else than the feed (a checkpoint, a code, "save your
+      // login"): the user has to see it, in the browser view.
+      if (await pageNeeds(v) === 'login' || !atFeed(page)) {
         out.need = 'login';
         return out;
       }
@@ -3473,12 +3486,15 @@ async function handle(req, res) {
     }
     const pressed = (q.get('op') === 'click' || q.get('op') === 'activate') && !out.offer;
     const input = pressed ? await focusedInput(page) : null;
-    const state = await page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
-    return { img, text, pg, input, out, focus, state, url: page.url(), oy: Math.round(v.oy * v.scale) };
+    const state = await pageNeeds(v);
+    // The feed shows posts: logging in is really over (the phone goes back
+    // to its own feed only then, not on some page on the way).
+    const feedReady = !state && s.mode === 'mob' && atFeed(page) && await feedCount(v) >= 1;
+    return { img, text, pg, input, out, focus, state, feedReady, url: page.url(), oy: Math.round(v.oy * v.scale) };
   });
   // A view switch started by this request finishes before the next one.
   s.chain = job.catch(() => {}).then(() => s.switching);
-  const { img, text, pg, input, out, focus, state, url, oy } = await job;
+  const { img, text, pg, input, out, focus, state, feedReady, url, oy } = await job;
 
   let hash = lastHash;
   if (pg) {
@@ -3496,6 +3512,8 @@ async function handle(req, res) {
     // 'login' / 'pin': the page waits for the user (the phone's own screens
     // send it here for that), 'ok' otherwise.
     'X-State': state || 'ok',
+    // 1: the mobile view is on the feed and it has posts.
+    'X-Feed-Ready': feedReady ? '1' : '0',
     'Cache-Control': 'no-store',
   };
   if (input) {
