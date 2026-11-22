@@ -355,6 +355,9 @@ public class FbMidlet extends MIDlet
                 chat.setCommandListener(this);
             }
         }
+        if (front != FRONT_CHAT) {
+            chat.splash.show(); // from another screen: the logo while it loads
+        }
         assist = ASSIST_NONE;
         front = FRONT_CHAT;
         net.paused = true;
@@ -369,10 +372,29 @@ public class FbMidlet extends MIDlet
     }
 
     /**
+     * Paint the current screen again once this paint is done (animation:
+     * menu slide-in, eased scroll). A repaint() asked from inside paint()
+     * can be dropped (BlackBerry 9900: the menu stayed part-way down until
+     * the user scrolled); callSerially runs after the paint on every phone.
+     */
+    void again() {
+        display.callSerially(new UiTask(this, UiTask.REPAINT, null, false));
+    }
+
+    /** UiTask.REPAINT. */
+    void repaintCurrent() {
+        Displayable d = display.getCurrent();
+        if (d instanceof javax.microedition.lcdui.Canvas) {
+            ((javax.microedition.lcdui.Canvas) d).repaint();
+        }
+    }
+
+    /**
      * The app's own News Feed screen (home). The browser view stops polling
      * while it is shown: its page on the server becomes the feed.
      */
     void openFeed() {
+        boolean from = front != FRONT_FEED;
         assist = ASSIST_NONE;
         front = FRONT_FEED;
         if (feed == null) {
@@ -381,6 +403,9 @@ public class FbMidlet extends MIDlet
                 feed.addCommand(cmdPageBack);
                 feed.setCommandListener(this);
             }
+        }
+        if (from) {
+            feed.splash.show(); // from another screen: the logo while it loads
         }
         net.paused = true;
         display.setCurrent(feed);

@@ -481,16 +481,14 @@ class ReaderCanvas extends Canvas implements Runnable, ImageSource {
         if (barH > 0) {
             paintFooter(g, w, h);
         }
+        boolean more = shownSy != sy;
         if (menu.open) {
-            boolean sliding = menu.tick();
+            more |= menu.tick();
             g.setClip(0, 0, w, h);
             menu.paint(g, w, vh, uf, !touch, title);
-            if (sliding) {
-                repaint();
-            }
         }
-        if (shownSy != sy) {
-            repaint();
+        if (more) {
+            app.again(); // menu slide-in, eased scroll
         }
     }
 
@@ -760,7 +758,7 @@ class ReaderCanvas extends Canvas implements Runnable, ImageSource {
         if (menu.open) {
             menu.hide();
         } else {
-            menu.show(viewHeight());
+            menu.show(app.blackberry ? 0 : viewHeight()); // BlackBerry: no slide-in, whole menu at once
         }
         repaint();
     }

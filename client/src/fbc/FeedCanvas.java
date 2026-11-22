@@ -72,6 +72,8 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
     private final Vector queue = new Vector();
     private volatile boolean running = true;
     private volatile boolean loading;
+    // Opened from another screen: the logo until the first reply.
+    final Splash splash;
     private String hash = "";
     private int moreAsked = -1;
 
@@ -84,6 +86,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
 
     FeedCanvas(FbMidlet app) {
         this.app = app;
+        splash = new Splash(this, Splash.FACEBOOK);
         setFullScreenMode(true);
         touch = hasPointerEvents();
         barH = touch ? Math.max(TextFrame.ui(TextFrame.UI_SIZE, false).height() + 22, 46) : 0;
@@ -148,6 +151,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
                 showMsg("Error: " + t.getMessage());
             }
             loading = false;
+            splash.hide(); // its first reply is in
             repaint();
         }
     }
@@ -426,19 +430,18 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
             g.fillRoundRect((w - tw) / 2, y, tw, th, 8, 8);
             uf.draw(g, m, w / 2, y + 3, 0xFFFFFF, 0x333333, Graphics.TOP | Graphics.HCENTER);
         }
+        splash.paint(g, w, vh, uf);
         if (barH > 0) {
             paintFooter(g, w, h);
         }
+        boolean more = shownSy != sy;
         if (menu.open) {
-            boolean sliding = menu.tick();
+            more |= menu.tick();
             g.setClip(0, 0, w, h);
             menu.paint(g, w, vh, uf, !touch, "Facebook");
-            if (sliding) {
-                repaint();
-            }
         }
-        if (shownSy != sy) {
-            repaint();
+        if (more) {
+            app.again(); // menu slide-in, eased scroll
         }
     }
 
@@ -710,7 +713,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
         if (menu.open) {
             menu.hide();
         } else {
-            menu.show(viewHeight());
+            menu.show(app.blackberry ? 0 : viewHeight()); // BlackBerry: no slide-in, whole menu at once
         }
         repaint();
     }
@@ -738,6 +741,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
     }
 
     protected void hideNotify() {
+        splash.hide();
         shown = false;
         pressed = false;
         barPress = -1;

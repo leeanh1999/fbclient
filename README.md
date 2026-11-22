@@ -90,7 +90,9 @@ box, 4 centre, 8 top of the box), skipping text clipped by a scroll pane or cove
 element. Pages with a large video in view or a desktop-width page shrunk to fit get a plain
 screenshot (no `X-Text`). Pseudo-element text (`::before`) stays in the image.
 
-`m=p&sy=<y>`: page mode, what the phone always asks for. When nothing on the page changed since the
+`m=p&sy=<y>`: page mode (the phone no longer asks for it: its browser view, only for logging in,
+Messenger's PIN and key 9 in the reader, sends no `m` and gets plain screenshots with the text in the
+image, since phone fonts are wider and cut lines short with "..."). When nothing on the page changed since the
 dump the phone has (DOM mutations, loads, transitions, scroll position: `__fbc.dumpKey`), the server
 answers `204` without dumping again. The server sends no image but a long
 stretch of the page (2 views above the phone's view to 6 below) as drawing commands, and the phone

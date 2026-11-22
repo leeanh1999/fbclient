@@ -1713,8 +1713,21 @@ async function closeSession(s) {
   }
 }
 
-async function createSession(id, w, h, zoom, ov, res) {
+// start 'desk': the phone opened Messenger first (its chat screen): only the
+// desktop browser starts, unless its profile has no login yet (then the
+// mobile one's cookies are copied over, as a switch does).
+async function createSession(id, w, h, zoom, ov, res, start) {
   const s = { id, w, h, zoom, ov, res, mode: 'mob', mob: null, desk: null, chain: Promise.resolve(), last: Date.now() };
+  if (start === 'desk') {
+    s.mode = 'desk';
+    const d = await getView(s, 'desk');
+    if (!await loggedIn(d)) {
+      const m = await getView(s, 'mob');
+      await d.ctx.addCookies(await m.ctx.cookies()).catch(() => {});
+    }
+    log('session created', id, `${w}x${h}@${zoom}%`, 'desk');
+    return s;
+  }
   const v = await getView(s, 'mob');
   if (v.page.url() === 'about:blank') {
     await v.page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('goto', e.message));
@@ -1727,9 +1740,9 @@ async function createSession(id, w, h, zoom, ov, res) {
 // arrive together, and two browsers on one profile broke the login.
 const sessionLocks = new Map();
 
-function getSession(id, w, h, zoom, ov, res) {
+function getSession(id, w, h, zoom, ov, res, start) {
   const prev = sessionLocks.get(id) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => openSession(id, w, h, zoom, ov, res));
+  const next = prev.catch(() => {}).then(() => openSession(id, w, h, zoom, ov, res, start));
   sessionLocks.set(id, next);
   next.catch(() => {}).then(() => {
     if (sessionLocks.get(id) === next) sessionLocks.delete(id);
@@ -1737,7 +1750,7 @@ function getSession(id, w, h, zoom, ov, res) {
   return next;
 }
 
-async function openSession(id, w, h, zoom, ov, res) {
+async function openSession(id, w, h, zoom, ov, res, start) {
   let s = sessions.get(id);
   if (s && (s.w !== w || s.h !== h || s.zoom !== zoom || s.ov !== ov || s.res !== res)) {
     // Viewport changed: relaunch; profiles on disk keep the login.
@@ -1751,7 +1764,7 @@ async function openSession(id, w, h, zoom, ov, res) {
       else await s.mob.page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
     }
   }
-  if (!s) s = await createSession(id, w, h, zoom, ov, res);
+  if (!s) s = await createSession(id, w, h, zoom, ov, res, start);
   sessions.set(id, s);
   s.last = Date.now();
   if (s.mode === 'desk') s.deskUsed = s.last;
@@ -2722,6 +2735,19 @@ function chatEval(v, fn, arg) {
 
 const chatState = (v) => chatEval(v, () => (window.__fbc ? window.__fbc.chatState() : ''));
 
+// Until Messenger shows its list or a thread, or the page waits for the
+// user (login, PIN), at most ms. A slow phone/NAS needs seconds to render it.
+async function chatReady(v, ms) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const st = await chatState(v);
+    if (st || Date.now() >= end) return st;
+    const need = await v.page.evaluate(() => (window.__fbc ? window.__fbc.needs() : '')).catch(() => '');
+    if (need) return '';
+    await sleep(250);
+  }
+}
+
 async function waitChat(v, want, ms) {
   const end = Date.now() + ms;
   let st = await chatState(v);
@@ -2839,7 +2865,17 @@ function encodeChat(s, list, scale) {
 
 async function chatAction(s, q) {
   const op = q.get('op') || 'list';
-  if (s.mode !== 'desk') await switchMode(s, MESSENGER_URL);
+  if (s.mode !== 'desk') {
+    if (s.desk && /\/messages\//.test(s.desk.page.url())) {
+      // Back from the feed: Messenger is still open (and kept itself up to
+      // date), no need to load it again.
+      s.mode = 'desk';
+      s.pendingSwitch = null;
+      log('switch', s.id, '-> desk (kept)');
+    } else {
+      await switchMode(s, MESSENGER_URL);
+    }
+  }
   const v = s.desk;
   const page = v.page;
   const out = {};
@@ -2851,8 +2887,9 @@ async function chatAction(s, q) {
   };
   if (!/\/messages\//.test(page.url())) {
     await page.goto(MESSENGER_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e) => log('chat', e.message));
-    await waitChat(v, 'list', 8000);
   }
+  // Just switched or loaded: let it render (a reload here started over).
+  await chatReady(v, 15000);
   if (await waitsForUser()) return out;
   const toList = async () => {
     if (await chatState(v) === 'thread' && await chatTap(v, 'back')) {
@@ -2947,7 +2984,7 @@ async function serveChat(res, q) {
     res.writeHead(400);
     return res.end('missing id');
   }
-  const s = await getSession(p.id, p.w, p.h, p.zoom, p.ov, p.rs);
+  const s = await getSession(p.id, p.w, p.h, p.zoom, p.ov, p.rs, 'desk');
   const job = s.chain.then(() => chatAction(s, q));
   s.chain = job.catch(() => {}).then(() => s.switching);
   const out = await job.catch((e) => {

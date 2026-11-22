@@ -197,9 +197,9 @@ class Net implements Runnable {
         sb.append("&z=").append(TextFrame.pageZoom());
         sb.append("&f=").append(app.png ? "png" : "jpg");
         sb.append("&q=").append(app.quality);
-        // Page mode: the page as drawing commands, scrolled here (the
-        // server falls back to text + image or a screenshot where it can't).
-        sb.append("&m=p");
+        // No m=: the browser view (login, PIN, key 9 in the reader) shows the
+        // page as a plain screenshot, text included. Page/text mode drew the
+        // text with phone fonts, which are wider, so lines ended in "...".
         sb.append(app.keyParam("&"));
         return sb.toString();
     }

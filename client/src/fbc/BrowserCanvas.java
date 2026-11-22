@@ -88,18 +88,9 @@ class BrowserCanvas extends Canvas implements Runnable {
     // When it was shown, 0 = hidden.
     private volatile long splashAt;
     private volatile int splashTo;
-    static final int SPLASH_MESSENGER = 0;
-    static final int SPLASH_FACEBOOK = 1;
-    private static final String[] SPLASH_NAME = {"Messenger", "Facebook"};
-    private static final String[] SPLASH_RES = {"messenger", "facebook"};
-    private static final int[] SPLASH_COLOR = {0x0A7CFF, 0x0866FF};
-    private static final int[] SPLASH_ICON = {Icons.MESSENGER, Icons.HOME};
+    static final int SPLASH_MESSENGER = Splash.MESSENGER;
+    static final int SPLASH_FACEBOOK = Splash.FACEBOOK;
     private static final int SPLASH_MAX_MS = 20000;
-    private static final int SPLASH_BG = 0xFFFFFF;
-    // Logos from the jar (res/<name>48.png, 64.png), loaded on first use;
-    // a vector icon if they can't be.
-    private final Image[] splashLogo = new Image[2];
-    private final boolean[] splashTried = new boolean[2];
 
     // Touch state
     private boolean pressed, dragging, longFired, pressOnBar;
@@ -375,34 +366,7 @@ class BrowserCanvas extends Canvas implements Runnable {
     }
 
     private void drawSplash(Graphics g, int w, int vh, int to) {
-        g.setColor(SPLASH_BG);
-        g.fillRect(0, 0, w, vh);
-        if (!splashTried[to]) {
-            splashTried[to] = true;
-            try {
-                splashLogo[to] = Image.createImage("/" + SPLASH_RES[to]
-                        + (Math.min(w, vh) >= 360 ? "64" : "48") + ".png");
-            } catch (Exception e) {
-                // vector icon below
-            }
-        }
-        Image logoImg = splashLogo[to];
-        int s = logoImg != null ? logoImg.getHeight() : 48;
-        int cy = vh / 2 - s / 3;
-        if (logoImg != null) {
-            g.drawImage(logoImg, w / 2, cy, Graphics.HCENTER | Graphics.VCENTER);
-        } else {
-            Icons.drawSmooth(g, SPLASH_ICON[to], w / 2, cy, s, SPLASH_COLOR[to], SPLASH_BG);
-        }
-        int ty = cy + s / 2 + 10;
-        font().draw(g, SPLASH_NAME[to], w / 2, ty, 0x65676B, SPLASH_BG, Graphics.TOP | Graphics.HCENTER);
-        // Three dots, one lit at a time.
-        int phase = (int) ((System.currentTimeMillis() / 250) % 3);
-        int dy = ty + font().height() + 14;
-        for (int i = 0; i < 3; i++) {
-            Icons.drawSmooth(g, Icons.CIRCLE, w / 2 + (i - 1) * 16, dy, 8,
-                    i == phase ? SPLASH_COLOR[to] : 0xBCC0C4, SPLASH_BG);
-        }
+        Splash.draw(g, w, vh, to, font());
     }
 
     void toast(String msg) {

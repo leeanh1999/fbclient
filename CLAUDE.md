@@ -80,7 +80,10 @@ here; the start screen and Home) · `ChatCanvas` / `ChatItem` (own Messenger scr
 chat list and thread, polled; Messenger) · `ReaderCanvas` / `ReaderRow` (every other page from
 `/p`: rows of text runs, images, inputs, flowed and drawn here). The browser view (`BrowserCanvas`)
 is only for logging in and Messenger's PIN (`X-Need` / `X-State`, `FbMidlet.assist`), plus key 9 in
-the reader · `ImageSource` (those screens' images for `ImageLoader`)
+the reader; it asks `/a` without `m=` and shows plain screenshots (text in the image; page and text
+mode drew it with phone fonts, which cut lines short with "...") · `ImageSource` (those screens' images for `ImageLoader`)
+· `Splash` / `SplashTick` (logo loading screen: the browser view switching Facebook/Messenger,
+the feed and chat screens opened from another screen until their first reply)
 · `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: the phone's
 own fonts, SMALL / MEDIUM / LARGE picked from the CSS px size by `TextFrame`, one size up or down
 with Settings > Text size) · `Emoji` (phone fonts lack emoji: the server sends each as a Private
@@ -113,7 +116,9 @@ images, so every screen shows emoji).
   elements get `data-fbc-k` keys that `op=press/type/video` act on (`__fbc.readerTarget`).
 - Chat screen (`/m`, `chatAction`): `__fbc.chatList` / `chatThread` read Messenger's desktop
   view at phone width (message text from each `[role=article]`'s aria-label, own messages by
-  position). Threads must be opened by tapping their row; a URL shows the list at this width.
+  position). Threads must be opened by tapping their row; a URL shows the list at this width. A session
+  started by `/m` launches only the desktop browser; back from the feed, a Messenger page still open
+  is reused (no reload), and `chatReady` waits for it to render instead of reloading it.
 - Responses use a hash so the client gets `204` when the frame is unchanged. Overscan (`ov`)
   renders a taller image in the mobile view, and `X-Oy` gives the view offset.
 - Video: the server never plays video in Chromium. It finds the MP4 URL, downloads it with yt-dlp
