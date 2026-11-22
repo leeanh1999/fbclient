@@ -6,8 +6,9 @@
 ```
 
 ## Install the app
-Download `FbClient.jad` + `FbClient.jar` from the
-[latest release](https://github.com/leeanh1999/fbclient/releases/latest). Release builds are
+Download `FbClient.jad` + `FbClient.jar` (BlackBerry: `FbClient-bb.jad` + `FbClient-bb.jar`) from the
+[latest release](https://github.com/leeanh1999/fbclient/releases/latest). The two differ only in the
+backlight helper for video: BlackBerry refuses to install a jar that mentions Nokia's API. Release builds are
 preverified (class 45 + StackMap) for real phones (Nokia E6 / S60). On its first start the app asks
 for the server address (e.g. `http://192.168.1.10:5080`); Menu → Settings → Server changes it.
 
@@ -28,7 +29,7 @@ CI (`.github/workflows`): `docker.yml` builds the arm64 image natively on GitHub
 `j2me.yml` builds the app and checks the bytecode. Each runs only for its own part: `server/**` →
 image, `client/**` → app; docs-only commits build nothing. A push that changes both the app and
 the server makes a new release (`v<a>.<b+1>.<run>`) with the app; one that changes only the app
-replaces `FbClient.jar/.jad` in the latest release; one that changes only the server makes no
+replaces `FbClient(-bb).jar/.jad` in the latest release; one that changes only the server makes no
 release.
 
 ## Server

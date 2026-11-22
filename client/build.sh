@@ -37,7 +37,7 @@ API="$API${SEP}$OUT/vendor"
 java -jar "$LIB/ecj-3.26.0.jar" -source 1.3 -target 1.1 -encoding UTF-8 -nowarn \
   -bootclasspath "$API" -d "$OUT/classes" src
 
-# 3. Manifest and package (not yet preverified).
+# 3. Manifest; packaged per jar below (not yet preverified).
 cat > "$OUT/MANIFEST.MF" <<EOF
 Manifest-Version: 1.0
 MIDlet-Name: FbClient
@@ -50,26 +50,39 @@ MicroEdition-Profile: MIDP-2.0
 Nokia-MIDlet-Category: Application
 Nokia-MIDlet-On-Screen-Keypad: no
 EOF
-jar cfm "$OUT/raw.jar" "$OUT/MANIFEST.MF" -C "$OUT/classes" . -C res .
+# Two jars, the same app: FbClient.jar for Nokia and the rest (with the Nokia
+# backlight helper) and FbClient-bb.jar for BlackBerry, which refuses to
+# install a jar that mentions a Nokia class. Lights loads the helpers by name.
+package() { # <jar name> <class left out>
+  local name=$1 drop=$2
+  rm -rf "$OUT/pkg" && cp -r "$OUT/classes" "$OUT/pkg"
+  rm -f "$OUT/pkg/fbc/$drop.class"
+  jar cfm "$OUT/raw.jar" "$OUT/MANIFEST.MF" -C "$OUT/pkg" . -C res .
 
-# 4. ProGuard: preverify (-microedition adds CLDC StackMap), drop unused code.
-java -cp "$LIB/*" proguard.ProGuard \
-  -injars "$OUT/raw.jar" \
-  -outjars "$OUT/FbClient.jar" \
-  -libraryjars "$API" \
-  -microedition \
-  -dontoptimize \
-  -dontobfuscate \
-  -dontnote \
-  -keep 'public class * extends javax.microedition.midlet.MIDlet'
-rm -f "$OUT/raw.jar"
+  # 4. ProGuard: preverify (-microedition adds CLDC StackMap), drop unused
+  # code (but not the helpers, only loaded by name).
+  java -cp "$LIB/*" proguard.ProGuard \
+    -injars "$OUT/raw.jar" \
+    -outjars "$OUT/$name.jar" \
+    -libraryjars "$API" \
+    -microedition \
+    -dontoptimize \
+    -dontobfuscate \
+    -dontnote \
+    -keep 'public class * extends javax.microedition.midlet.MIDlet' \
+    -keep 'public class fbc.NokiaLights { *; }' \
+    -keep 'public class fbc.RimLights { *; }'
+  rm -rf "$OUT/raw.jar" "$OUT/pkg"
 
-# 5. JAD: Nokia phones read the jar size from here.
-SIZE=$(wc -c < "$OUT/FbClient.jar" | tr -d ' ')
-{
-  grep -v '^Manifest-Version' "$OUT/MANIFEST.MF"
-  echo "MIDlet-Jar-URL: FbClient.jar"
-  echo "MIDlet-Jar-Size: $SIZE"
-} > "$OUT/FbClient.jad"
-
-echo "Built $OUT/FbClient.jar ($SIZE bytes), $OUT/FbClient.jad"
+  # 5. JAD: Nokia phones read the jar size from here.
+  local size
+  size=$(wc -c < "$OUT/$name.jar" | tr -d ' ')
+  {
+    grep -v '^Manifest-Version' "$OUT/MANIFEST.MF"
+    echo "MIDlet-Jar-URL: $name.jar"
+    echo "MIDlet-Jar-Size: $size"
+  } > "$OUT/$name.jad"
+  echo "Built $OUT/$name.jar ($size bytes), $OUT/$name.jad"
+}
+package FbClient RimLights
+package FbClient-bb NokiaLights

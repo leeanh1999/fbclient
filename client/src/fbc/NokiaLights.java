@@ -1,8 +1,11 @@
 package fbc;
 
 /** Nokia only (see Lights): full backlight until the phone's own timeout. */
-class NokiaLights {
-    static void on() {
+public class NokiaLights implements Backlit {
+    public NokiaLights() {
+    }
+
+    public void on() {
         com.nokia.mid.ui.DeviceControl.setLights(0, 100);
     }
 }

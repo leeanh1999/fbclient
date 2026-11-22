@@ -32,7 +32,7 @@ yt-dlp through a proxy (e.g. where Facebook is blocked). Production/Docker alway
 
 Client (`client/`, run from repo root, Git Bash on Windows):
 ```sh
-bash client/build.sh                 # real phones -> client/build/ (JDK 11+, Maven downloads ECJ+ProGuard)
+bash client/build.sh                 # real phones -> client/build/FbClient(-bb).jar (JDK 11+, Maven: ECJ+ProGuard)
 sh client/build-emu.sh               # emulators only -> client/dist/ (JDK + python, offline, stubs)
 OUT=dist-new sh client/build-emu.sh  # when the emulator locks dist/FbClient.jar
 VERSION=1.2.3 bash client/build.sh
@@ -45,14 +45,14 @@ through `app.connUrl()` (BlackBerry transport suffix).
 Docker / deploy: `docker build server`; the published image is `ghcr.io/leeanh1999/fbclient`
 (**arm64 only**, Synology NAS, host port 5080). `deploy.sh` runs on the NAS. A push to main that
 changes `client/**` rebuilds the app: if it also changes `server/**` it makes a new GitHub release
-(`v<a>.<b+1>.<run number>`), otherwise it replaces `FbClient.jar/.jad` in the latest release
+(`v<a>.<b+1>.<run number>`), otherwise it replaces `FbClient(-bb).jar/.jad` in the latest release
 (MIDlet-Version = that release's a.b + the run number, always increasing).
 
 Rooted Android phone (arm64, e.g. Redmi Note 5) instead of the NAS: no Docker there, so
 `android/pull-image.py` pulls the published image from GHCR and unpacks it as a rootfs, and
 `android/fbclient.sh` runs it in a chroot (port 5080; data bound from `/data/local/fbclient/data`;
 Magisk `service.d` autostart) plus `android/files.py` on port 8090, which serves the latest release's
-`FbClient.jad/.jar` for OTA installs. On the phone (Termux, `pkg install python`):
+`FbClient.jad/.jar` for OTA installs (`FbClient-bb` to BlackBerry browsers asking for the same link). On the phone (Termux, `pkg install python`):
 `su -c "sh /sdcard/fbclient/fbclient.sh update"`. From the PC over SSH (Termux sshd, 8022):
 `PHONE=<ip> SSH_USER=<u> bash android/deploy-phone.sh [update|scripts|local|status|log|rollback]`.
 
@@ -66,7 +66,9 @@ Magisk `service.d` autostart) plus `android/files.py` on port 8090, which serves
   int `kind` through `Display.callSerially`).
 - `client/stubs/` are hand-written API stubs used only by `build-emu.sh`. Vendor API stubs
   (`stubs/com/nokia`, `stubs/net/rim`) are also compiled against by `build.sh`, never packed: reach
-  them only through a class loaded after `Class.forName` finds the real one (see `Lights`). If you use a MIDP/MMAPI
+  them only from a helper loaded by name (`Class.forName`, see `Lights`), never referenced directly:
+  `build.sh` makes `FbClient.jar` without `RimLights` and `FbClient-bb.jar` (BlackBerry refuses any
+  jar mentioning `com.nokia`) without `NokiaLights`; CI checks both. If you use a MIDP/MMAPI
   method that the stubs lack, add it there too. `fix_sb.py` patches the emulator build
   (`StringBuilder`→`StringBuffer`, class version 48).
 

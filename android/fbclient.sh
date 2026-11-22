@@ -113,16 +113,29 @@ migrate_legacy() {
 fetch_app() {
   say "Downloading the latest FbClient.jad/.jar from GitHub"
   mkdir -p "$WWW"
+  # FbClient: Nokia and other phones; FbClient-bb: BlackBerry (files.py gives
+  # it to BlackBerry browsers asking for FbClient.jad). Older releases have
+  # no -bb files.
   if curl -fsSL -o "$WWW/FbClient.jar.tmp" "$RELEASE_URL/FbClient.jar" \
       && curl -fsSL -o "$WWW/FbClient.jad.tmp" "$RELEASE_URL/FbClient.jad"; then
     mv -f "$WWW/FbClient.jar.tmp" "$WWW/FbClient.jar"
     mv -f "$WWW/FbClient.jad.tmp" "$WWW/FbClient.jad"
+    bb=""
+    if curl -fsSL -o "$WWW/FbClient-bb.jar.tmp" "$RELEASE_URL/FbClient-bb.jar" \
+        && curl -fsSL -o "$WWW/FbClient-bb.jad.tmp" "$RELEASE_URL/FbClient-bb.jad"; then
+      mv -f "$WWW/FbClient-bb.jar.tmp" "$WWW/FbClient-bb.jar"
+      mv -f "$WWW/FbClient-bb.jad.tmp" "$WWW/FbClient-bb.jad"
+      bb="<p><a href=\"FbClient-bb.jad\">BlackBerry (FbClient-bb.jad)</a></p>"
+    else
+      rm -f "$WWW/FbClient-bb.jar.tmp" "$WWW/FbClient-bb.jad.tmp" "$WWW/FbClient-bb.jar" "$WWW/FbClient-bb.jad"
+    fi
     ver=$(grep '^MIDlet-Version' "$WWW/FbClient.jad" | cut -d' ' -f2 | tr -d '\r')
     cat > "$WWW/index.html" <<EOF
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width">
 <title>FbClient $ver</title></head><body>
 <h3>FbClient $ver</h3>
 <p><a href="FbClient.jad">Install (FbClient.jad)</a></p>
+$bb
 <p><a href="FbClient.jar">FbClient.jar</a> ($(wc -c < "$WWW/FbClient.jar") bytes)</p>
 <p>Server: http://$(ip_addr):$PORT</p>
 </body></html>

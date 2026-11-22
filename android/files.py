@@ -8,6 +8,7 @@ server sends the J2ME MIME types.
 """
 import functools
 import http.server
+import os
 import sys
 
 port, root = int(sys.argv[1]), sys.argv[2]
@@ -20,6 +21,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         '.jar': 'application/java-archive',
         '.html': 'text/html; charset=utf-8',
     })
+
+    def send_head(self):
+        # BlackBerry refuses the Nokia build: the same link gives it its own.
+        ua = self.headers.get('User-Agent', '')
+        if 'BlackBerry' in ua and self.path.split('?')[0] in ('/FbClient.jad', '/FbClient.jar'):
+            bb = self.path.split('?')[0].replace('FbClient', 'FbClient-bb', 1)
+            if os.path.isfile(os.path.join(self.directory, bb.lstrip('/'))):
+                self.path = bb
+        return super().send_head()
 
     def end_headers(self):
         # Always the newest build, never a cached one.

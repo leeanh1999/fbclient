@@ -86,15 +86,23 @@ jobs:
 
       # Real S60 phones only run CLDC classes: version 45 with StackMap
       # (preverified). Anything newer fails to install without a reason.
+      # FbClient-bb.jar (BlackBerry) must not mention Nokia's API: BlackBerry
+      # refuses to install it. FbClient.jar likewise not BlackBerry's.
       - name: Check classes are CLDC-compliant
         run: |
-          mkdir -p /tmp/check && cd /tmp/check && unzip -oq "$GITHUB_WORKSPACE/client/build/FbClient.jar"
-          for f in $(find . -name '*.class'); do
-            javap -v "$f" | grep -q 'major version: 45' || { echo "wrong class version: $f"; exit 1; }
+          for jar in FbClient FbClient-bb; do
+            rm -rf /tmp/check && mkdir -p /tmp/check && cd /tmp/check
+            unzip -oq "$GITHUB_WORKSPACE/client/build/$jar.jar"
+            for f in $(find . -name '*.class'); do
+              javap -v "$f" | grep -q 'major version: 45' || { echo "$jar: wrong class version: $f"; exit 1; }
+            done
+            if find . -name '*$*.class' | grep -q .; then echo "$jar: nested classes found (KEmulator fails on them)"; exit 1; fi
+            javap -v fbc/Net.class | grep -q StackMap || { echo "$jar: not preverified"; exit 1; }
+            other=net/rim
+            [ "$jar" = FbClient-bb ] && other=com/nokia
+            if grep -rlq "$other" .; then echo "$jar mentions $other"; exit 1; fi
+            echo "$jar: all classes are version 45 with StackMap, no $other"
           done
-          if find . -name '*$*.class' | grep -q .; then echo "nested classes found (KEmulator fails on them)"; exit 1; fi
-          javap -v fbc/Net.class | grep -q StackMap || { echo "not preverified"; exit 1; }
-          echo "All classes are version 45 with StackMap"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -102,6 +110,8 @@ jobs:
           path: |
             client/build/FbClient.jar
             client/build/FbClient.jad
+            client/build/FbClient-bb.jar
+            client/build/FbClient-bb.jad
 
       # App only: the latest release gets the new files (same names,
       # replaced). App and server (or no release yet): a new release.
@@ -113,10 +123,12 @@ jobs:
           VERSION: ${{ steps.info.outputs.version }}
         run: |
           if [ -n "$TAG" ]; then
-            gh release upload "$TAG" client/build/FbClient.jar client/build/FbClient.jad --clobber
+            gh release upload "$TAG" client/build/FbClient.jar client/build/FbClient.jad \
+              client/build/FbClient-bb.jar client/build/FbClient-bb.jad --clobber
             echo "Replaced the app in release $TAG (MIDlet-Version $VERSION)"
           else
             gh release create "v$VERSION" client/build/FbClient.jar client/build/FbClient.jad \
+              client/build/FbClient-bb.jar client/build/FbClient-bb.jad \
               --target "${{ github.sha }}" --title "v$VERSION" --generate-notes
             echo "New release v$VERSION (app and server changed)"
           fi

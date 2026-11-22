@@ -6,35 +6,32 @@ import javax.microedition.lcdui.Display;
  * Keeps the screen lit while a video plays. MIDP has no "keep screen on",
  * and Display.flashBacklight dims and re-lights the screen on each call on
  * Nokia and BlackBerry, so their own APIs are used where present: Nokia's
- * DeviceControl.setLights, BlackBerry's Backlight.enable. Those classes are
- * only touched through NokiaLights / RimLights, loaded on the phone that
- * has them.
+ * DeviceControl.setLights (NokiaLights, in FbClient.jar), BlackBerry's
+ * Backlight.enable (RimLights, in FbClient-bb.jar). Both are loaded by
+ * name, so a jar without one still installs and runs.
  */
 class Lights {
 
-    private static final int NONE = 0;
-    private static final int NOKIA = 1;
-    private static final int RIM = 2;
-    private static int kind = -1;
+    private static boolean tried;
+    private static Backlit maker;
     private static long flashAt;
 
     /** Call every few seconds while the light must stay on. */
     static void keepOn(Display d) {
-        if (kind < 0) {
-            kind = has("com.nokia.mid.ui.DeviceControl") ? NOKIA
-                    : has("net.rim.device.api.system.Backlight") ? RIM : NONE;
+        if (!tried) {
+            tried = true;
+            maker = load("com.nokia.mid.ui.DeviceControl", "fbc.NokiaLights");
+            if (maker == null) {
+                maker = load("net.rim.device.api.system.Backlight", "fbc.RimLights");
+            }
         }
-        try {
-            if (kind == NOKIA) {
-                NokiaLights.on();
+        if (maker != null) {
+            try {
+                maker.on();
                 return;
+            } catch (Throwable t) {
+                maker = null; // not allowed after all
             }
-            if (kind == RIM) {
-                RimLights.on();
-                return;
-            }
-        } catch (Throwable t) {
-            kind = NONE; // not allowed or missing after all
         }
         // Other phones: as rarely as possible, it may blink.
         long now = System.currentTimeMillis();
@@ -48,12 +45,13 @@ class Lights {
         }
     }
 
-    private static boolean has(String name) {
+    /** The helper class when the phone has the API and the jar has the helper. */
+    private static Backlit load(String api, String helper) {
         try {
-            Class.forName(name);
-            return true;
+            Class.forName(api);
+            return (Backlit) Class.forName(helper).newInstance();
         } catch (Throwable t) {
-            return false;
+            return null;
         }
     }
 }
