@@ -1015,7 +1015,11 @@ function pageHelpers() {
     // Under the media: a shared link's title, a page's name and so on.
     const card = paragraphs(rest.filter((r) => r.y >= mediaTop && !r.btn && r.area !== first.area)).slice(0, 4);
     if (!body.length && !media.length && !card.length) return null;
-    const k = hashOf([title, body[0] || '', card[0] || ''].join('|'));
+    // Key: the start of the text only, so unfolding "See more" (a tap on
+    // the text) keeps it; the full first paragraph changed it, and taps
+    // on that post then found nothing.
+    const lead = (body[0] || '').replace(/(\.\.\.|…)\s*$/, '').slice(0, 40);
+    const k = hashOf([title, lead, card[0] || ''].join('|'));
     if (!recipe) return { k };
     const count = (b) => {
       const m = b && flat(b.textContent || '').match(/\d[\d.,]*\s*(?:K|M|N|Tr)?/i);
@@ -1067,7 +1071,15 @@ function pageHelpers() {
       t = feedMedia(p)[i || 0];
       t = t && t.im;
     } else {
-      // The body text opens the post; without one, the meta line (time).
+      // The post: its comment button opens it (with the comments) every
+      // time; a tap on long text often only unfolds "See more". Without
+      // one, the body text, or the meta line (time).
+      t = p.footer[1];
+      if (t) {
+        t.scrollIntoView({ block: 'center', behavior: 'instant' });
+        const r = t.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
       const areas = Array.from(el.querySelectorAll('[data-mcomponent$="TextArea"]'))
         .filter((a) => {
           const r = a.getBoundingClientRect();
@@ -1572,63 +1584,134 @@ function toModeUrl(url, mode) {
 
 // ---- Browser contexts ----
 
+// Requests the browser never needs to make: Facebook's and Google's
+// tracking and ads, and feed videos that start downloading on their own
+// (the server plays video through yt-dlp, never in the browser). Blocked
+// per tab by Chrome itself (no round trip through Node per request).
+const BLOCKED_URLS = [
+  '*.fbcdn.net/*.mp4*', '*.fbcdn.net/*.m4a*', '*.fbcdn.net/*.webm*',
+  '*/ajax/weblite_load_logging/*', '*/ajax/weblite_app_logging/*', '*/ajax/bz*', '*/ajax/bnzai*',
+  '*/ajax/logging/*', '*/logging/falco*',
+  '*fbsbx.com/paid_ads_pixel*', '*connect.facebook.net/*',
+  '*google.com/ccm/*', '*google.com/rmkt/*', '*google.com/pagead/*', '*googleadservices.com/*',
+  '*doubleclick.net/*', '*googlesyndication.com/*', '*google-analytics.com/*', '*googletagmanager.com/*',
+];
+
+// One Chrome per phone, on its mobile profile (<id>-mob): the mobile view is
+// one tab, Messenger another (launchView), sharing the login and memory.
+// (The <id>-desk profile of older versions is no longer used.)
+async function launchBrowser(s) {
+  if (s.ctx) return s.ctx;
+  if (s.launching) return s.launching;
+  s.launching = (async () => {
+    const scale = s.zoom / 100;
+    const hCss = Math.round(s.h / scale);
+    // Overscan: render extra rows above and below the phone's view so it can
+    // scroll locally without blank areas (mobile view; see launchView).
+    const margin = Math.round(hCss * s.ov / 100);
+    const opts = {
+      headless: true,
+      viewport: { width: Math.round(s.w / scale), height: hCss + 2 * margin },
+      // Low resolution (r=1.5 or 2): the image has 1/r of the phone's pixels per
+      // side and the phone scales it up. Coordinates in headers and requests
+      // stay in phone px (view.scale), so only the image shrinks.
+      deviceScaleFactor: scale / s.res,
+      isMobile: true,
+      hasTouch: false,
+      userAgent: UA_MOBILE,
+      locale: 'vi-VN',
+      // The helpers draw images (emoji, encrypted media) into canvases and
+      // read them back; keep Facebook's Content-Security-Policy out of it.
+      bypassCSP: true,
+      // Less memory and background work: no extensions, sync, translate,
+      // component updates or audio, at most two renderers per browser.
+      args: ['--disable-dev-shm-usage', '--deny-permission-prompts', '--disable-extensions', '--disable-sync',
+        '--disable-background-networking', '--disable-component-update', '--disable-default-apps', '--no-first-run',
+        '--mute-audio', '--renderer-process-limit=2', '--disable-features=Translate,MediaRouter,OptimizationHints'],
+    };
+    if (PROXY) opts.proxy = { server: PROXY };
+    if (CHANNEL) opts.channel = CHANNEL;
+    // Persistent profile: cookies and IndexedDB (Messenger E2EE keys).
+    const dir = path.join(PROFILE_DIR, s.id + '-mob');
+    let ctx;
+    try {
+      ctx = await chromium.launchPersistentContext(dir, opts);
+    } catch (e) {
+      // Fall back only when Chrome is not installed. Any other failure (e.g.
+      // the profile is locked) must not open the profile with Chromium: it
+      // cannot decrypt Chrome's cookies on Windows, so the login is lost.
+      if (!opts.channel || !/is not found|not installed|ENOENT/i.test(e.message)) throw e;
+      log('channel', opts.channel, 'unavailable, using bundled chromium:', e.message.split('\n')[0]);
+      delete opts.channel;
+      ctx = await chromium.launchPersistentContext(dir, opts);
+    }
+    await ctx.addInitScript(pageHelpers);
+    // Keep the tabs we made: any other (a popup) replaces the active view's
+    // page. newPage() fires 'page' before it resolves: s.opening covers it.
+    ctx.on('page', async (pg) => {
+      if (s.own.has(pg) || s.opening > 0) return;
+      await pg.waitForLoadState('domcontentloaded').catch(() => {});
+      const url = pg.url();
+      await pg.close().catch(() => {});
+      const v = active(s);
+      if (v && url && url !== 'about:blank') await v.page.goto(url).catch(() => {});
+    });
+    s.ctx = ctx;
+    return ctx;
+  })().finally(() => {
+    s.launching = null;
+  });
+  return s.launching;
+}
+
+// A tab of the session's browser, made (or the browser's first, unused one
+// reused) without the popup handler closing it.
+async function ownPage(s, reuseFirst) {
+  const ctx = await launchBrowser(s);
+  const first = reuseFirst && ctx.pages().find((pg) => !s.own.has(pg));
+  if (first) {
+    s.own.add(first);
+    return first;
+  }
+  s.opening++;
+  try {
+    const pg = await ctx.newPage();
+    s.own.add(pg);
+    return pg;
+  } finally {
+    s.opening--;
+  }
+}
+
+// mode 'mob': m.facebook.com as a phone. 'desk': Messenger, which shows
+// mobile browsers a "get the app" wall, so this tab is emulated as a desktop
+// browser (user agent, client hints, no touch) at the phone's width.
 async function launchView(s, mode) {
   const desk = mode === 'desk';
   const scale = s.zoom / 100;
   const hCss = Math.round(s.h / scale);
-  // Overscan: render extra rows above and below the phone's view so it can
-  // scroll locally without blank areas. Off for the desktop (Messenger)
-  // view, whose 100vh layout would push the composer out of sight.
+  // No overscan for the desktop (Messenger) view: its 100vh layout would
+  // push the composer out of sight.
   const margin = desk ? 0 : Math.round(hCss * s.ov / 100);
-  const opts = {
-    headless: true,
-    viewport: { width: Math.round(s.w / scale), height: hCss + 2 * margin },
-    // Low resolution (r=1.5 or 2): the image has 1/r of the phone's pixels per
-    // side and the phone scales it up. Coordinates in headers and requests
-    // stay in phone px (view.scale), so only the image shrinks.
-    deviceScaleFactor: scale / s.res,
-    isMobile: !desk,
-    hasTouch: false,
-    userAgent: desk ? UA_DESKTOP : UA_MOBILE,
-    locale: 'vi-VN',
-    // The helpers draw images (emoji, encrypted media) into canvases and
-    // read them back; keep Facebook's Content-Security-Policy out of it.
-    bypassCSP: true,
-    // Less memory and background work: no extensions, sync, translate,
-    // component updates or audio, at most two renderers per browser.
-    args: ['--disable-dev-shm-usage', '--deny-permission-prompts', '--disable-extensions', '--disable-sync',
-      '--disable-background-networking', '--disable-component-update', '--disable-default-apps', '--no-first-run',
-      '--mute-audio', '--renderer-process-limit=2', '--disable-features=Translate,MediaRouter,OptimizationHints'],
-  };
-  if (PROXY) opts.proxy = { server: PROXY };
-  if (CHANNEL) opts.channel = CHANNEL;
-  // Persistent profiles keep cookies and IndexedDB (Messenger E2EE keys).
-  const dir = path.join(PROFILE_DIR, `${s.id}-${mode}`);
-  let ctx;
-  try {
-    ctx = await chromium.launchPersistentContext(dir, opts);
-  } catch (e) {
-    // Fall back only when Chrome is not installed. Any other failure (e.g.
-    // the profile is locked) must not open the profile with Chromium: it
-    // cannot decrypt Chrome's cookies on Windows, so the login is lost.
-    if (!opts.channel || !/is not found|not installed|ENOENT/i.test(e.message)) throw e;
-    log('channel', opts.channel, 'unavailable, using bundled chromium:', e.message.split('\n')[0]);
-    delete opts.channel;
-    ctx = await chromium.launchPersistentContext(dir, opts);
+  const page = await ownPage(s, !desk);
+  const cdp = await page.context().newCDPSession(page);
+  if (desk) {
+    await cdp.send('Emulation.setUserAgentOverride', {
+      userAgent: UA_DESKTOP, platform: 'Win32', acceptLanguage: 'vi-VN',
+      userAgentMetadata: {
+        brands: [{ brand: 'Chromium', version: '120' }, { brand: 'Google Chrome', version: '120' }],
+        fullVersion: '120.0.0.0', platform: 'Windows', platformVersion: '10.0.0', architecture: 'x86', model: '', mobile: false,
+      },
+    });
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: Math.round(s.w / scale), height: hCss, deviceScaleFactor: scale / s.res, mobile: false,
+    });
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   }
-  await ctx.addInitScript(pageHelpers);
-  const page = ctx.pages()[0] || await ctx.newPage();
+  await cdp.send('Network.enable').catch(() => {});
+  await cdp.send('Network.setBlockedURLs', { urls: BLOCKED_URLS }).catch((e) => log('block', e.message));
   // oy: CSS offset of the phone's view inside the (taller) viewport.
-  const view = { mode, ctx, page, scale, margin, oy: 0, lastUrl: '' };
-
-  // Keep a single tab: popups replace the current page.
-  ctx.on('page', async (p) => {
-    if (p === view.page || p === view.helper || view.opening) return;
-    await p.waitForLoadState('domcontentloaded').catch(() => {});
-    const url = p.url();
-    await p.close().catch(() => {});
-    if (url && url !== 'about:blank') await view.page.goto(url).catch(() => {});
-  });
+  const view = { mode, ctx: s.ctx, page, cdp, scale, margin, oy: 0, lastUrl: '' };
   // A freshly loaded document starts scrolled to the top.
   page.on('domcontentloaded', () => {
     view.oy = 0;
@@ -1640,6 +1723,15 @@ async function launchView(s, mode) {
     if (/^https?:/.test(u) && wantMode(u) !== mode) s.pendingSwitch = u;
   });
   return view;
+}
+
+// Closes one view's tab (idle); the browser stays for the other.
+async function closeView(s, mode) {
+  const v = s[mode];
+  if (!v) return;
+  s[mode] = null;
+  s.own.delete(v.page);
+  await v.page.close().catch(() => {});
 }
 
 async function importLegacyCookies(s, ctx) {
@@ -1672,7 +1764,6 @@ async function switchMode(s, url) {
   const to = wantMode(url);
   const from = active(s);
   const target = await getView(s, to);
-  await target.ctx.addCookies(await from.ctx.cookies()).catch(() => {});
   s.mode = to;
   s.pendingSwitch = null;
   log('switch', s.id, '->', to, url);
@@ -1707,24 +1798,25 @@ function inBackground(s, work) {
 }
 
 async function closeSession(s) {
-  for (const m of ['mob', 'desk']) {
-    if (s[m]) await s[m].ctx.close().catch(() => {});
-    s[m] = null;
-  }
+  if (s.launching) await s.launching.catch(() => {});
+  const ctx = s.ctx;
+  s.ctx = null;
+  s.mob = null;
+  s.desk = null;
+  s.img = null;
+  if (ctx) await ctx.close().catch(() => {});
 }
 
-// start 'desk': the phone opened Messenger first (its chat screen): only the
-// desktop browser starts, unless its profile has no login yet (then the
-// mobile one's cookies are copied over, as a switch does).
+// start 'desk': the phone opened Messenger first (its chat screen): only
+// the Messenger tab opens.
 async function createSession(id, w, h, zoom, ov, res, start) {
-  const s = { id, w, h, zoom, ov, res, mode: 'mob', mob: null, desk: null, chain: Promise.resolve(), last: Date.now() };
+  const s = {
+    id, w, h, zoom, ov, res, mode: 'mob', mob: null, desk: null, chain: Promise.resolve(), last: Date.now(),
+    ctx: null, own: new WeakSet(), opening: 0,
+  };
   if (start === 'desk') {
     s.mode = 'desk';
-    const d = await getView(s, 'desk');
-    if (!await loggedIn(d)) {
-      const m = await getView(s, 'mob');
-      await d.ctx.addCookies(await m.ctx.cookies()).catch(() => {});
-    }
+    await getView(s, 'desk');
     log('session created', id, `${w}x${h}@${zoom}%`, 'desk');
     return s;
   }
@@ -1816,7 +1908,6 @@ async function goBack(s, out) {
     out.loading = 'facebook';
     s.pendingSwitch = null;
     inBackground(s, (async () => {
-      await s.mob.ctx.addCookies(await v.ctx.cookies()).catch(() => {});
       s.mode = 'mob';
       const mp = s.mob.page;
       if (wantMode(mp.url()) === 'desk') {
@@ -2186,25 +2277,21 @@ function addRecipes(s, recipes) {
 // Sheet size limit in phone px: what an old phone can decode at once.
 const SHEET_MAX_PX = 400000;
 
-// In the view in use, so the other one can be closed when idle.
+// A tab of the session's browser for rendering images.
 async function imgPage(s) {
-  const v = active(s);
-  if (!v.img) {
+  if (!s.img) {
     const ip = { page: null, chain: Promise.resolve() };
-    v.img = ip;
-    v.opening = true; // the popup handler must leave this tab alone
-    ip.ready = v.ctx.newPage().then((p) => {
-      ip.page = p;
-      v.helper = p;
-    }).finally(() => {
-      v.opening = false;
+    s.img = ip;
+    ip.ready = ownPage(s, false).then((pg) => {
+      ip.page = pg;
     });
     ip.ready.catch(() => {
-      if (v.img === ip) v.img = null;
+      if (s.img === ip) s.img = null;
     });
   }
-  await v.img.ready;
-  return v.img;
+  const ip = s.img;
+  await ip.ready;
+  return ip;
 }
 
 // Shelf packing from y0: sets it.px/it.py (CSS px) and stops before the
@@ -2397,7 +2484,16 @@ async function pageNeeds(v) {
 
 async function feedAction(s, q) {
   const op = q.get('op') || 'load';
-  if (s.mode !== 'mob') await switchMode(s, HOME);
+  if (s.mode !== 'mob') {
+    if (s.mob && /^https:\/\/m\.facebook\.com\//.test(s.mob.page.url())) {
+      // Back from Messenger: the feed tab is still open where it was.
+      s.mode = 'mob';
+      s.pendingSwitch = null;
+      log('switch', s.id, '-> mob (kept)');
+    } else {
+      await switchMode(s, HOME);
+    }
+  }
   const v = s.mob;
   const page = v.page;
   const out = {};
@@ -2440,20 +2536,49 @@ async function feedAction(s, q) {
     await waitPosts(v, before + 1, 3000);
     await sleep(200); // the rest of that batch
   } else {
-    const t = await page.evaluate(([k, w, i]) => (window.__fbc ? window.__fbc.feedTarget(k, w, i) : null),
+    // Back from a post, the feed is drawn again a moment later: wait for
+    // the post (at most 3 s) rather than answer "not found".
+    const target = () => page.evaluate(([k, w, i]) => (window.__fbc ? window.__fbc.feedTarget(k, w, i) : null),
       [q.get('k') || '', op, parseInt(q.get('i') || '0', 10)]).catch(() => null);
+    let t = await target();
+    for (let end = Date.now() + 3000; !t && Date.now() < end;) {
+      await sleep(250);
+      t = await target();
+    }
     if (!t) {
       out.err = 'Post not found, reload the feed';
     } else {
+      const before = page.url();
       await page.mouse.click(t.x, t.y);
       s.clickAt = Date.now();
       if (FEED_OPEN.has(op)) {
-        out.exit = true;
-        await settle(page, 800);
-        syncView(v);
-        return out;
+        // Only once the page really changed: otherwise the reader showed
+        // the feed itself. (Share opens a sheet on the same page.)
+        const opened = async (ms) => {
+          for (let end = Date.now() + ms; page.url() === before && Date.now() < end;) await sleep(150);
+          return page.url() !== before;
+        };
+        let ok = op === 'share' || await opened(op === 'media' ? 3000 : 5000);
+        if (!ok && op === 'media') {
+          // A photo that opens nothing at this width: open its post.
+          await page.keyboard.press('Escape').catch(() => {});
+          const p2 = await page.evaluate((k) => (window.__fbc ? window.__fbc.feedTarget(k, 'post', 0) : null), q.get('k') || '')
+            .catch(() => null);
+          if (p2) {
+            await page.mouse.click(p2.x, p2.y);
+            ok = await opened(5000);
+          }
+        }
+        if (ok) {
+          out.exit = true;
+          await settle(page, 800);
+          syncView(v);
+          return out;
+        }
+        out.err = 'Could not open it, try again';
+      } else {
+        await sleep(800); // like: the button turns blue
       }
-      await sleep(800); // like: the button turns blue
     }
   }
   const d = await dumpFeed(v);
@@ -3613,19 +3738,15 @@ async function reapIdle() {
       // Between requests (s.chain), and only if still unused by then.
       s.chain = s.chain.then(async () => {
         if (!s.desk || s.mode !== 'mob' || s.switching || Date.now() - (s.deskUsed || 0) <= DESK_IDLE_MS) return;
-        const d = s.desk;
-        s.desk = null;
-        await d.ctx.close().catch(() => {});
-        log('messenger browser closed (idle)', id);
+        await closeView(s, 'desk');
+        log('messenger tab closed (idle)', id);
       }).catch(() => {});
     } else if (s.mob && s.mode === 'desk' && !s.switching && now - (s.mobUsed || 0) > MOB_IDLE_MS) {
       s.chain = s.chain.then(async () => {
         if (!s.mob || s.mode !== 'desk' || s.switching || Date.now() - (s.mobUsed || 0) <= MOB_IDLE_MS) return;
-        const m = s.mob;
-        s.mob = null;
         s.feed = null;
-        await m.ctx.close().catch(() => {});
-        log('facebook browser closed (idle)', id);
+        await closeView(s, 'mob');
+        log('facebook tab closed (idle)', id);
       }).catch(() => {});
     }
   }

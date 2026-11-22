@@ -72,6 +72,8 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
     private final Vector queue = new Vector();
     private volatile boolean running = true;
     private volatile boolean loading;
+    // Touch scrolling that goes on after a quick swipe.
+    private final Kinetic fling = new Kinetic();
     // Opened from another screen: the logo until the first reply.
     final Splash splash;
     private String hash = "";
@@ -144,6 +146,9 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
                 queue.removeElementAt(0);
             }
             loading = true;
+            if (posts.size() == 0) {
+                splash.show(); // nothing to show yet: the logo, not "Loading feed..."
+            }
             repaint();
             try {
                 execute(req);
@@ -379,6 +384,16 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
         g.setColor(C_BG);
         g.fillRect(0, 0, w, vh);
         // Ease the drawn position toward sy; keep painting until there.
+        if (fling.active) {
+            // A swipe going on: no easing, stop at either end.
+            int want = sy + fling.step();
+            int fy = FbMidlet.clamp(want, 0, maxScroll());
+            if (fy != want) {
+                fling.stop();
+            }
+            sy = shownSy = fy;
+            moved();
+        }
         int d = sy - shownSy;
         if (d != 0) {
             shownSy += Math.abs(d) <= 3 ? d : d / 2;
@@ -434,7 +449,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
         if (barH > 0) {
             paintFooter(g, w, h);
         }
-        boolean more = shownSy != sy;
+        boolean more = shownSy != sy || fling.active;
         if (menu.open) {
             more |= menu.tick();
             g.setClip(0, 0, w, h);
@@ -530,6 +545,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
     // ---- Scrolling ----
 
     private void scrollTo(int y) {
+        fling.stop(); // keys, Home: the view goes where they say
         layout();
         sy = FbMidlet.clamp(y, 0, maxScroll());
         repaint();
@@ -741,7 +757,6 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
     }
 
     protected void hideNotify() {
-        splash.hide();
         shown = false;
         pressed = false;
         barPress = -1;
@@ -761,6 +776,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
         px0 = x;
         py0 = y;
         sy = shownSy; // a touch stops the easing
+        fling.press(y);
         pressSy = sy;
         if (pressOnBar) {
             barPress = x * FOOTER.length / getWidth();
@@ -778,6 +794,7 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
             pressSy = sy;
         }
         if (dragging) {
+            fling.track(y);
             jumpTo(pressSy + py0 - y);
         }
     }
@@ -819,6 +836,9 @@ class FeedCanvas extends Canvas implements Runnable, ImageSource {
         }
         if (dragging) {
             dragging = false;
+            if (fling.release()) {
+                repaint(); // goes on in paint()
+            }
             return;
         }
         // Tap: the part under the finger.

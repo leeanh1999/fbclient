@@ -475,12 +475,34 @@ public class FbMidlet extends MIDlet
         return u.indexOf("facebook.com/messages") >= 0 || u.indexOf("messenger.com") >= 0;
     }
 
+    // The player shown or being shown, and the screen to go back to.
+    private VideoView video;
+    private Displayable beforeVideo;
+
     void openVideo(String videoKey) {
-        Displayable d = display.getCurrent();
-        if (d instanceof VideoView) {
-            ((VideoView) d).dispose(); // "Next": free the previous player first
+        // Free the previous player first ("Next", or a second request before
+        // the first player was shown: left running, it kept re-lighting the
+        // screen after the video was closed).
+        if (video != null) {
+            video.dispose();
         }
-        display.setCurrent(new VideoView(this, videoKey));
+        Displayable d = display.getCurrent();
+        if (!(d instanceof VideoView)) {
+            beforeVideo = d;
+        }
+        video = new VideoView(this, videoKey);
+        display.setCurrent(video);
+    }
+
+    /** Closing the player: back to the screen the video was opened from. */
+    void closeVideo(VideoView v) {
+        v.dispose();
+        if (video == v) {
+            video = null;
+        }
+        Displayable back = beforeVideo;
+        beforeVideo = null;
+        display.setCurrent(back != null && !(back instanceof VideoView) ? back : (Displayable) canvas);
     }
 
     /** "Next" in the player: the server finds the following video. */

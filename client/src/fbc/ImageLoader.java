@@ -41,7 +41,10 @@ class ImageLoader implements Runnable {
 
     void start() {
         running = true;
-        new Thread(this).start();
+        // Below the UI: decoding an image must not stall scrolling.
+        Thread t = new Thread(this);
+        t.setPriority(Thread.MIN_PRIORITY);
+        t.start();
     }
 
     synchronized void stop() {

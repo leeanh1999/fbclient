@@ -42,12 +42,13 @@ npm start                         # listens on :8080
 Env vars: `PORT` (8080), `PROXY` (optional, local runs only, e.g. `socks5://host:port` where
 Facebook is blocked; empty = direct; ignored with `NODE_ENV=production`, i.e. in Docker),
 `TOKEN` (access key, empty = none),
-`HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (5; minutes before an idle phone's browsers close), `DESK_IDLE_MIN` (2; minutes the Messenger browser stays open unused once the phone is back on Facebook), `MOB_IDLE_MIN` (2; likewise the Facebook browser while the phone stays in its chat screen), `CHANNEL` (chrome; empty = bundled Chromium),
+`HOME_URL` (https://m.facebook.com/), `IDLE_MIN` (5; minutes before an idle phone's browsers close), `DESK_IDLE_MIN` (2; minutes the Messenger tab stays open unused once the phone is back on Facebook), `MOB_IDLE_MIN` (2; likewise the Facebook tab while the phone stays in its chat screen), `CHANNEL` (chrome; empty = bundled Chromium),
 `YTDLP` (yt-dlp), `DATA_DIR` (`server/data`; `/data` in Docker).
 
-Each phone gets two persistent Chrome profiles in `<DATA_DIR>/profiles/<clientId>-{mob,desk}`:
+Each phone gets one Chrome on the persistent profile `<DATA_DIR>/profiles/<clientId>-mob` (older
+versions also had `-desk`, now unused), with one tab per view, sharing the login:
 - `mob`: Android UA, m.facebook.com
-- `desk`: desktop UA, used automatically for `facebook.com/messages`, messenger.com, m.me, and when
+- `desk`: a tab emulated as a desktop browser (CDP: user agent, client hints, no touch), used automatically for `facebook.com/messages`, messenger.com, m.me, and when
   the m.facebook.com Messenger tab shows its in-page "Tải ứng dụng Messenger" wall (detected by text
   for 8 s after a tap). Rendered at the phone's own width (not a scaled-down 900 px page), so
   Facebook's responsive layout gives a single column with normal-size text. Cookies are copied
@@ -188,8 +189,9 @@ Reload, Settings, Exit). The browser view (`/a`) is left for logging in and Mess
 `X-State: ok`, and for a login also `X-Feed-Ready: 1`, so the verification pages after the password
 (codes, approvals, "save login") stay in front; `/f` also asks for it when the home page sends it
 elsewhere), and for key 9 in the reader (the same page as before). Each screen
-uses one of the session's two browsers; the other closes after `DESK_IDLE_MIN` / `MOB_IDLE_MIN`,
-and `/img` renders in the one in use.
+uses one of the browser's two view tabs; the other closes after `DESK_IDLE_MIN` / `MOB_IDLE_MIN`,
+and `/img` renders in a tab of its own. Every view tab blocks tracking, ads and feed video
+downloads (the server plays video through yt-dlp).
 
 ### Reader screen (`/p`)
 `__fbc.readerDump` turns the page into rows in reading order: items whose boxes overlap

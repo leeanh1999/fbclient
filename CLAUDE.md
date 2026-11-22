@@ -64,7 +64,9 @@ Magisk `service.d` autostart) plus `android/files.py` on port 8090, which serves
 - **No nested, inner or anonymous classes** (CI rejects any `*$*.class`; KEmulator fails on them).
   Use top-level package-private classes instead (see `UiTask`, which dispatches UI work by an
   int `kind` through `Display.callSerially`).
-- `client/stubs/` are hand-written API stubs used only by `build-emu.sh`. If you use a MIDP/MMAPI
+- `client/stubs/` are hand-written API stubs used only by `build-emu.sh`. Vendor API stubs
+  (`stubs/com/nokia`, `stubs/net/rim`) are also compiled against by `build.sh`, never packed: reach
+  them only through a class loaded after `Class.forName` finds the real one (see `Lights`). If you use a MIDP/MMAPI
   method that the stubs lack, add it there too. `fix_sb.py` patches the emulator build
   (`StringBuilder`→`StringBuffer`, class version 48).
 
@@ -84,6 +86,9 @@ the reader; it asks `/a` without `m=` and shows plain screenshots (text in the i
 mode drew it with phone fonts, which cut lines short with "...") · `ImageSource` (those screens' images for `ImageLoader`)
 · `Splash` / `SplashTick` (logo loading screen: the browser view switching Facebook/Messenger,
 the feed and chat screens opened from another screen until their first reply)
+· `Kinetic` (touch scrolling that goes on after a swipe, stepped in each screen's paint) · `Lights`
+(keeps the screen lit during video: Nokia `DeviceControl` via `NokiaLights`, BlackBerry `Backlight`
+via `RimLights`, loaded only where the class exists; `flashBacklight` elsewhere, as it blinks)
 · `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: the phone's
 own fonts, SMALL / MEDIUM / LARGE picked from the CSS px size by `TextFrame`, one size up or down
 with Settings > Text size) · `Emoji` (phone fonts lack emoji: the server sends each as a Private
@@ -92,10 +97,14 @@ images, so every screen shows emoji).
 
 ## Server architecture (`server/server.js`)
 
-- `sessions` Map keyed by the phone's `id` (clientId). Each session has two persistent Chromium
-  profiles in `<DATA_DIR>/profiles/<id>-{mob,desk}`: mobile UA on m.facebook.com, and desktop UA
-  for Messenger (`DESKTOP_URL`, or when the `MESSENGER_WALL` text appears). `switchMode` copies
-  cookies between them. `reapIdle` closes sessions after `IDLE_MIN`.
+- `sessions` Map keyed by the phone's `id` (clientId). Each session has **one** Chrome
+  (`launchBrowser`) on the persistent profile `<DATA_DIR>/profiles/<id>-mob`, with a tab per view
+  (`launchView`): `mob`, m.facebook.com as a phone, and `desk`, Messenger (`DESKTOP_URL`, or when the
+  `MESSENGER_WALL` text appears) in a tab emulated as a desktop browser through CDP (user agent,
+  client hints, no touch) at the phone's width; plus one tab for `/img`. The old `<id>-desk` profile
+  is unused (Messenger asks for its PIN once on this profile). Every view tab blocks tracking, ads
+  and feed video downloads (`BLOCKED_URLS`, `Network.setBlockedURLs`). `reapIdle` closes the unused
+  view's tab after `DESK_IDLE_MIN` / `MOB_IDLE_MIN`, the whole browser after `IDLE_MIN`.
 - `pageHelpers()` is an init script injected into every page. It runs **in the browser**, not
   Node. It blocks inline video, hides "open app" buttons, and implements D-pad focus navigation as
   `window.__fbc`, used by `op=move/activate/click`.
@@ -111,14 +120,16 @@ images, so every screen shows emoji).
 - Feed screen (`/f`, `feedAction`): `__fbc.feedDump` reads posts from m.facebook.com's Bloks
   feed by layout (`[data-tracking-duration-id]` blocks: avatar + bold title, body, media, button
   row); keys are content hashes (the attribute changes on scroll). `__fbc.feedTarget` finds where
-  to tap for like/open. The feed arrives over a WebSocket, so there is no API to intercept.
+  to tap for like/open. A post opens by its comment button (a tap on long text only
+  unfolds "See more"); an open only counts once the URL changed, otherwise the reader would show the
+  feed. Keys use the first 40 characters of the text, so unfolding keeps them. The feed arrives over a WebSocket, so there is no API to intercept.
 - Reader (`/p`, `readerAction`): `__fbc.readerDump` reads any page into rows of items; pressable
   elements get `data-fbc-k` keys that `op=press/type/video` act on (`__fbc.readerTarget`).
 - Chat screen (`/m`, `chatAction`): `__fbc.chatList` / `chatThread` read Messenger's desktop
   view at phone width (message text from each `[role=article]`'s aria-label, own messages by
   position). Threads must be opened by tapping their row; a URL shows the list at this width. A session
-  started by `/m` launches only the desktop browser; back from the feed, a Messenger page still open
-  is reused (no reload), and `chatReady` waits for it to render instead of reloading it.
+  started by `/m` opens only the Messenger tab; switching between the feed and Messenger reuses the
+  other tab where it was (no reload), and `chatReady` waits for it to render instead of reloading it.
 - Responses use a hash so the client gets `204` when the frame is unchanged. Overscan (`ov`)
   renders a taller image in the mobile view, and `X-Oy` gives the view offset.
 - Video: the server never plays video in Chromium. It finds the MP4 URL, downloads it with yt-dlp

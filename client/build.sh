@@ -27,6 +27,11 @@ if [ ! -f "$LIB/ecj-3.26.0.jar" ]; then
   mvn -q -f tools/pom.xml dependency:copy-dependencies -DoutputDirectory="../$LIB"
 fi
 API="$LIB/cldcapi11-2.0.4.jar${SEP}$LIB/midpapi20-2.0.4.jar${SEP}$LIB/microemu-jsr-135-2.0.4.jar"
+# Vendor APIs (Nokia, BlackBerry) as stubs: compiled against, never packed.
+rm -rf "$OUT/vendor"
+mkdir -p "$OUT/vendor"
+java -jar "$LIB/ecj-3.26.0.jar" -source 1.3 -target 1.1 -nowarn -bootclasspath "$API" -d "$OUT/vendor" stubs/com stubs/net
+API="$API${SEP}$OUT/vendor"
 
 # 2. Compile to 1.1 bytecode (CLDC rejects newer class files).
 java -jar "$LIB/ecj-3.26.0.jar" -source 1.3 -target 1.1 -encoding UTF-8 -nowarn \

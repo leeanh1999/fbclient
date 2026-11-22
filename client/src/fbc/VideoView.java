@@ -119,15 +119,11 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
                 if (barShown && !paused && !ended && status == null && now > barUntil) {
                     setBar(false);
                 }
-                // MIDP has no "keep screen on": while playing, re-light the
-                // backlight before the phone's timeout (often 10-30 s) dims it.
-                if (!paused && !ended && now - lightAt > 5000) {
+                // Keep the screen lit while playing (and shown: a player left
+                // behind must not keep the light busy).
+                if (!paused && !ended && isShown() && now - lightAt > 5000) {
                     lightAt = now;
-                    try {
-                        app.display.flashBacklight(15000);
-                    } catch (Throwable t) {
-                        // not supported on this phone
-                    }
+                    Lights.keepOn(app.display);
                 }
                 repaint();
                 Thread.sleep(500);
@@ -384,8 +380,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     }
 
     void close() {
-        dispose();
-        app.display.setCurrent(app.canvas);
+        app.closeVideo(this);
     }
 
     private static boolean isSoft(int k) {

@@ -74,6 +74,8 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
     private final Vector queue = new Vector();
     private volatile boolean running = true;
     private volatile boolean loading;
+    // Touch scrolling that goes on after a quick swipe.
+    private final Kinetic fling = new Kinetic();
     // Opened from another screen: the logo until the first reply.
     final Splash splash;
     private String hash = "";
@@ -173,6 +175,9 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
             }
             loading = !req.startsWith(POLL);
             if (loading) {
+                if (!thread && rows.size() == 0) {
+                    splash.show(); // nothing to show yet: the logo
+                }
                 repaint();
             }
             try {
@@ -424,6 +429,17 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
         int h = getHeight();
         int vh = viewHeight();
         Vector list = layout();
+        if (fling.active) {
+            // A swipe going on: no easing, stop at either end.
+            int want = sy + fling.step();
+            int fy = FbMidlet.clamp(want, 0, maxScroll());
+            if (fy != want) {
+                fling.stop();
+            }
+            sy = shownSy = fy;
+            stickBottom = thread && sy >= maxScroll() - 4;
+            moved();
+        }
         int d = sy - shownSy;
         if (d != 0) {
             shownSy += Math.abs(d) <= 3 ? d : d / 2;
@@ -485,7 +501,7 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
         if (barH > 0) {
             paintFooter(g, w, h);
         }
-        boolean more = shownSy != sy;
+        boolean more = shownSy != sy || fling.active;
         if (menu.open) {
             more |= menu.tick();
             g.setClip(0, 0, w, h);
@@ -629,6 +645,7 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
     // ---- Scrolling ----
 
     private void scrollTo(int y, boolean smooth) {
+        fling.stop(); // keys, a drag: the view goes where they say
         layout();
         sy = FbMidlet.clamp(y, 0, maxScroll());
         if (!smooth) {
@@ -790,7 +807,6 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
     }
 
     protected void hideNotify() {
-        splash.hide();
         shown = false;
         pressed = false;
         barPress = -1;
@@ -814,6 +830,7 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
         px0 = x;
         py0 = y;
         sy = shownSy;
+        fling.press(y);
         pressSy = sy;
         if (pressOnBar) {
             int n = (thread ? FOOTER_THREAD : FOOTER_LIST).length;
@@ -832,6 +849,7 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
             pressSy = sy;
         }
         if (dragging) {
+            fling.track(y);
             scrollTo(pressSy + py0 - y, false);
         }
     }
@@ -871,6 +889,9 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
         }
         if (dragging) {
             dragging = false;
+            if (fling.release()) {
+                repaint(); // goes on in paint()
+            }
             return;
         }
         int vh = viewHeight();

@@ -20,8 +20,9 @@ class Splash {
     private static final int[] COLOR = {0x0A7CFF, 0x0866FF};
     private static final int[] ICON = {Icons.MESSENGER, Icons.HOME};
     private static final int BG = 0xFFFFFF;
-    // Never longer than this, whatever happens to the request.
-    private static final int MAX_MS = 20000;
+    // Never longer than this, whatever happens to the request (a cold start
+    // on a NAS or phone server can take half a minute).
+    private static final int MAX_MS = 60000;
 
     private static final Image[] logo = new Image[2];
     private static final boolean[] tried = new boolean[2];
@@ -36,6 +37,11 @@ class Splash {
         this.to = to;
     }
 
+    /**
+     * Shown until hide(). Not hidden by hideNotify: phones call it for
+     * their own pop-ups (S60's network access prompt on the first request),
+     * which left "Loading feed..." instead of the logo.
+     */
     void show() {
         int g;
         synchronized (this) {
