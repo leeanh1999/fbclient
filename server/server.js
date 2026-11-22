@@ -85,8 +85,23 @@ function pageHelpers() {
       if (n.style.getPropertyValue('display') !== 'none') n.style.setProperty('display', 'none', 'important');
     }
   };
-  setInterval(hideAppButtons, 700);
-  document.addEventListener('DOMContentLoaded', hideAppButtons);
+  // Only m.facebook.com shows them. Run when the page changed, at most every
+  // 700 ms: a plain interval re-read every button of every page (Messenger's
+  // included) forever, which kept the CPU busy with nobody using it.
+  if (/(^|\.)m\.facebook\.com$/.test(location.hostname)) {
+    let due = false;
+    const run = () => {
+      due = false;
+      hideAppButtons();
+    };
+    new MutationObserver(() => {
+      if (!due) {
+        due = true;
+        setTimeout(run, 700);
+      }
+    }).observe(document, { childList: true, subtree: true });
+    document.addEventListener('DOMContentLoaded', hideAppButtons);
+  }
 
   // ---- D-pad focus ----
   const SEL = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], ' +
@@ -1725,6 +1740,41 @@ async function launchView(s, mode) {
   return view;
 }
 
+// Headless Chrome never hides a tab, so idle ones keep running Facebook's
+// scripts. Views unused for FREEZE_MS are frozen (no scripts, no timers);
+// the next request thaws them (openSession).
+const FREEZE_MS = 20000;
+
+async function setFrozen(v, frozen) {
+  if (!v || !v.cdp || !!v.frozen === frozen) return;
+  v.frozen = frozen;
+  try {
+    await v.cdp.send('Page.setWebLifecycleState', { state: frozen ? 'frozen' : 'active' });
+  } catch (e) {
+    v.frozen = false;
+    log('freeze', e.message.split('\n')[0]);
+  }
+}
+
+async function thaw(s) {
+  await setFrozen(s.mob, false);
+  await setFrozen(s.desk, false);
+}
+
+// Between requests (s.chain), and only if still unused by then.
+function freezeIdle() {
+  const now = Date.now();
+  for (const s of sessions.values()) {
+    if (now - s.last < FREEZE_MS || s.switching) continue;
+    if ((!s.mob || s.mob.frozen) && (!s.desk || s.desk.frozen)) continue;
+    s.chain = s.chain.then(async () => {
+      if (Date.now() - s.last < FREEZE_MS || s.switching) return;
+      await setFrozen(s.mob, true);
+      await setFrozen(s.desk, true);
+    }).catch(() => {});
+  }
+}
+
 // Closes one view's tab (idle); the browser stays for the other.
 async function closeView(s, mode) {
   const v = s[mode];
@@ -1861,6 +1911,7 @@ async function openSession(id, w, h, zoom, ov, res, start) {
   s.last = Date.now();
   if (s.mode === 'desk') s.deskUsed = s.last;
   else s.mobUsed = s.last;
+  await thaw(s); // frozen while idle (freezeIdle)
   return s;
 }
 
@@ -3764,6 +3815,7 @@ async function shutdown() {
 }
 
 setInterval(() => reapIdle().catch((e) => log('reap', e.message)), 60000);
+setInterval(freezeIdle, 5000);
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 http.createServer((req, res) => {

@@ -5,10 +5,11 @@ import javax.microedition.lcdui.Display;
 /**
  * Keeps the screen lit while a video plays. MIDP has no "keep screen on",
  * and Display.flashBacklight dims and re-lights the screen on each call on
- * Nokia and BlackBerry, so their own APIs are used where present: Nokia's
- * DeviceControl.setLights (NokiaLights, in FbClient.jar), BlackBerry's
- * Backlight.enable (RimLights, in FbClient-bb.jar). Both are loaded by
- * name, so a jar without one still installs and runs.
+ * Nokia, so its own API is used where present: DeviceControl.setLights
+ * (NokiaLights, only in FbClient.jar, loaded by name). BlackBerry's own
+ * Backlight is a signed API (an unsigned app using it does not start), so
+ * other phones use flashBacklight, as rarely as possible; BlackBerry none:
+ * there it blinks the light for the whole duration.
  */
 class Lights {
 
@@ -16,14 +17,14 @@ class Lights {
     private static Backlit maker;
     private static long flashAt;
 
-    /** Call every few seconds while the light must stay on. */
-    static void keepOn(Display d) {
+    /**
+     * Call every few seconds while the light must stay on. flash: whether
+     * flashBacklight may be used (not on BlackBerry).
+     */
+    static void keepOn(Display d, boolean flash) {
         if (!tried) {
             tried = true;
             maker = load("com.nokia.mid.ui.DeviceControl", "fbc.NokiaLights");
-            if (maker == null) {
-                maker = load("net.rim.device.api.system.Backlight", "fbc.RimLights");
-            }
         }
         if (maker != null) {
             try {
@@ -35,10 +36,22 @@ class Lights {
         }
         // Other phones: as rarely as possible, it may blink.
         long now = System.currentTimeMillis();
-        if (now - flashAt > 20000) {
+        if (flash && now - flashAt > 20000) {
             flashAt = now;
             try {
                 d.flashBacklight(30000);
+            } catch (Throwable t) {
+                // not supported
+            }
+        }
+    }
+
+    /** The video closed: end a flashBacklight effect still going. */
+    static void stop(Display d) {
+        if (flashAt != 0) {
+            flashAt = 0;
+            try {
+                d.flashBacklight(0);
             } catch (Throwable t) {
                 // not supported
             }

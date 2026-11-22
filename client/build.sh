@@ -27,10 +27,10 @@ if [ ! -f "$LIB/ecj-3.26.0.jar" ]; then
   mvn -q -f tools/pom.xml dependency:copy-dependencies -DoutputDirectory="../$LIB"
 fi
 API="$LIB/cldcapi11-2.0.4.jar${SEP}$LIB/midpapi20-2.0.4.jar${SEP}$LIB/microemu-jsr-135-2.0.4.jar"
-# Vendor APIs (Nokia, BlackBerry) as stubs: compiled against, never packed.
+# Vendor API (Nokia) as stubs: compiled against, never packed.
 rm -rf "$OUT/vendor"
 mkdir -p "$OUT/vendor"
-java -jar "$LIB/ecj-3.26.0.jar" -source 1.3 -target 1.1 -nowarn -bootclasspath "$API" -d "$OUT/vendor" stubs/com stubs/net
+java -jar "$LIB/ecj-3.26.0.jar" -source 1.3 -target 1.1 -nowarn -bootclasspath "$API" -d "$OUT/vendor" stubs/com
 API="$API${SEP}$OUT/vendor"
 
 # 2. Compile to 1.1 bytecode (CLDC rejects newer class files).
@@ -52,15 +52,17 @@ Nokia-MIDlet-On-Screen-Keypad: no
 EOF
 # Two jars, the same app: FbClient.jar for Nokia and the rest (with the Nokia
 # backlight helper) and FbClient-bb.jar for BlackBerry, which refuses to
-# install a jar that mentions a Nokia class. Lights loads the helpers by name.
-package() { # <jar name> <class left out>
+# install a jar that mentions a Nokia class (and to start one that uses its
+# own signed APIs, so it has no maker helper at all). Lights loads the
+# helper by name.
+package() { # <jar name> <class left out, or "none">
   local name=$1 drop=$2
   rm -rf "$OUT/pkg" && cp -r "$OUT/classes" "$OUT/pkg"
   rm -f "$OUT/pkg/fbc/$drop.class"
   jar cfm "$OUT/raw.jar" "$OUT/MANIFEST.MF" -C "$OUT/pkg" . -C res .
 
   # 4. ProGuard: preverify (-microedition adds CLDC StackMap), drop unused
-  # code (but not the helpers, only loaded by name).
+  # code (but not the helper, only loaded by name).
   java -cp "$LIB/*" proguard.ProGuard \
     -injars "$OUT/raw.jar" \
     -outjars "$OUT/$name.jar" \
@@ -70,8 +72,7 @@ package() { # <jar name> <class left out>
     -dontobfuscate \
     -dontnote \
     -keep 'public class * extends javax.microedition.midlet.MIDlet' \
-    -keep 'public class fbc.NokiaLights { *; }' \
-    -keep 'public class fbc.RimLights { *; }'
+    -keep 'public class fbc.NokiaLights { *; }'
   rm -rf "$OUT/raw.jar" "$OUT/pkg"
 
   # 5. JAD: Nokia phones read the jar size from here.
@@ -84,5 +85,5 @@ package() { # <jar name> <class left out>
   } > "$OUT/$name.jad"
   echo "Built $OUT/$name.jar ($size bytes), $OUT/$name.jad"
 }
-package FbClient RimLights
+package FbClient none
 package FbClient-bb NokiaLights

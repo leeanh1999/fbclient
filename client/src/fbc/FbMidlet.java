@@ -491,6 +491,11 @@ public class FbMidlet extends MIDlet
             beforeVideo = d;
         }
         video = new VideoView(this, videoKey);
+        if (blackberry) {
+            // Its Escape (back) key arrives as this command: closes the player.
+            video.addCommand(cmdPageBack);
+            video.setCommandListener(this);
+        }
         display.setCurrent(video);
     }
 
@@ -779,6 +784,12 @@ public class FbMidlet extends MIDlet
     // ---- CommandListener ----
 
     public void commandAction(Command c, Displayable d) {
+        if (d instanceof VideoView) {
+            if (c == cmdPageBack) {
+                ((VideoView) d).close();
+            }
+            return;
+        }
         if (d == canvas) {
             if (c == cmdPageBack) {
                 canvas.backPressed();

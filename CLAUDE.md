@@ -65,10 +65,11 @@ Magisk `service.d` autostart) plus `android/files.py` on port 8090, which serves
   Use top-level package-private classes instead (see `UiTask`, which dispatches UI work by an
   int `kind` through `Display.callSerially`).
 - `client/stubs/` are hand-written API stubs used only by `build-emu.sh`. Vendor API stubs
-  (`stubs/com/nokia`, `stubs/net/rim`) are also compiled against by `build.sh`, never packed: reach
+  (`stubs/com/nokia`) are also compiled against by `build.sh`, never packed: reach
   them only from a helper loaded by name (`Class.forName`, see `Lights`), never referenced directly:
-  `build.sh` makes `FbClient.jar` without `RimLights` and `FbClient-bb.jar` (BlackBerry refuses any
-  jar mentioning `com.nokia`) without `NokiaLights`; CI checks both. If you use a MIDP/MMAPI
+  `build.sh` makes `FbClient.jar` and `FbClient-bb.jar` without `NokiaLights` (BlackBerry refuses any
+  jar mentioning `com.nokia`). No BlackBerry API (`net.rim`): it is signed, and BlackBerry would not
+  start the unsigned app using it (`Backlight`). CI checks both jars. If you use a MIDP/MMAPI
   method that the stubs lack, add it there too. `fix_sb.py` patches the emulator build
   (`StringBuilder`→`StringBuffer`, class version 48).
 
@@ -89,8 +90,9 @@ mode drew it with phone fonts, which cut lines short with "...") · `ImageSource
 · `Splash` / `SplashTick` (logo loading screen: the browser view switching Facebook/Messenger,
 the feed and chat screens opened from another screen until their first reply)
 · `Kinetic` (touch scrolling that goes on after a swipe, stepped in each screen's paint) · `Lights`
-(keeps the screen lit during video: Nokia `DeviceControl` via `NokiaLights`, BlackBerry `Backlight`
-via `RimLights`, loaded only where the class exists; `flashBacklight` elsewhere, as it blinks)
+(keeps the screen lit during video: Nokia `DeviceControl` via `NokiaLights`, loaded by name only
+where the class exists; `flashBacklight` every 20 s on other phones, ended with `flashBacklight(0)` on close; none on
+BlackBerry, where it blinks the light. BlackBerry's back key reaches the player as `cmdPageBack`)
 · `MenuOverlay` / `Icons` (vector-drawn UI) · `TextFont` (all text the app draws: the phone's
 own fonts, SMALL / MEDIUM / LARGE picked from the CSS px size by `TextFrame`, one size up or down
 with Settings > Text size) · `Emoji` (phone fonts lack emoji: the server sends each as a Private

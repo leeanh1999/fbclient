@@ -86,8 +86,9 @@ jobs:
 
       # Real S60 phones only run CLDC classes: version 45 with StackMap
       # (preverified). Anything newer fails to install without a reason.
-      # FbClient-bb.jar (BlackBerry) must not mention Nokia's API: BlackBerry
-      # refuses to install it. FbClient.jar likewise not BlackBerry's.
+      # Neither jar may use BlackBerry's API (signed: an unsigned app using
+      # it does not start), and FbClient-bb.jar not Nokia's either
+      # (BlackBerry refuses to install it).
       - name: Check classes are CLDC-compliant
         run: |
           for jar in FbClient FbClient-bb; do
@@ -98,8 +99,8 @@ jobs:
             done
             if find . -name '*$*.class' | grep -q .; then echo "$jar: nested classes found (KEmulator fails on them)"; exit 1; fi
             javap -v fbc/Net.class | grep -q StackMap || { echo "$jar: not preverified"; exit 1; }
-            other=net/rim
-            [ "$jar" = FbClient-bb ] && other=com/nokia
+            other='net/rim'
+            [ "$jar" = FbClient-bb ] && other='net/rim\|com/nokia'
             if grep -rlq "$other" .; then echo "$jar mentions $other"; exit 1; fi
             echo "$jar: all classes are version 45 with StackMap, no $other"
           done

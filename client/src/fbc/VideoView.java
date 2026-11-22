@@ -123,7 +123,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
                 // behind must not keep the light busy).
                 if (!paused && !ended && isShown() && now - lightAt > 5000) {
                     lightAt = now;
-                    Lights.keepOn(app.display);
+                    Lights.keepOn(app.display, !app.blackberry);
                 }
                 repaint();
                 Thread.sleep(500);
@@ -354,6 +354,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
     /** Stop playback and free the player (the screen may stay). */
     void dispose() {
         closed = true;
+        Lights.stop(app.display);
         Player p = player;
         player = null;
         if (p != null) {

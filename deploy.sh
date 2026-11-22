@@ -11,7 +11,8 @@
 #   DIR      folder containing the compose file     (default: this script's folder)
 #   FILE     compose file name (default: compose.yaml, docker-compose.yml, ...)
 #   FORCE    =1 runs 'up -d' even if the image did not change
-#   APP_DIR  folder to copy the latest FbClient.jad/.jar release into
+#   APP_DIR  folder to copy the latest release's app into: FbClient.jad/.jar
+#            (Nokia, others) and FbClient-bb.jad/.jar (BlackBerry)
 #            (default: /share-folder/symbian; "APP_DIR=" skips this step)
 set -euo pipefail
 
@@ -103,20 +104,30 @@ else
   echo "No old images."
 fi
 
-# J2ME app: fetch FbClient.jad/.jar of the latest GitHub release. Download to
-# temp files first so a broken connection never leaves a half-written app.
+# J2ME app: fetch the .jad/.jar pairs of the latest GitHub release:
+# FbClient (Nokia and other phones) and FbClient-bb (BlackBerry, which
+# refuses the Nokia one). Download to temp files first so a broken
+# connection never leaves a half-written app.
+fetch_app() { # <name>
+  local name=$1
+  if curl -fsSL -o "$APP_DIR/$name.jar.tmp" "$RELEASE_URL/$name.jar" \
+    && curl -fsSL -o "$APP_DIR/$name.jad.tmp" "$RELEASE_URL/$name.jad"; then
+    mv -f "$APP_DIR/$name.jar.tmp" "$APP_DIR/$name.jar"
+    mv -f "$APP_DIR/$name.jad.tmp" "$APP_DIR/$name.jad"
+    chmod 644 "$APP_DIR/$name.jar" "$APP_DIR/$name.jad"
+    echo "$name: $(grep '^MIDlet-Version' "$APP_DIR/$name.jad" | tr -d '\r'), $(wc -c < "$APP_DIR/$name.jar") bytes"
+  else
+    rm -f "$APP_DIR/$name.jar.tmp" "$APP_DIR/$name.jad.tmp"
+    echo "Warning: could not download $name.jad/.jar from GitHub - keeping the old ones in $APP_DIR."
+  fi
+}
 if [ -n "$APP_DIR" ]; then
   say "Copying the latest J2ME app to $APP_DIR"
-  if mkdir -p "$APP_DIR" \
-    && curl -fsSL -o "$APP_DIR/FbClient.jar.tmp" "$RELEASE_URL/FbClient.jar" \
-    && curl -fsSL -o "$APP_DIR/FbClient.jad.tmp" "$RELEASE_URL/FbClient.jad"; then
-    mv -f "$APP_DIR/FbClient.jar.tmp" "$APP_DIR/FbClient.jar"
-    mv -f "$APP_DIR/FbClient.jad.tmp" "$APP_DIR/FbClient.jad"
-    chmod 644 "$APP_DIR/FbClient.jar" "$APP_DIR/FbClient.jad"
-    echo "$(grep '^MIDlet-Version' "$APP_DIR/FbClient.jad"), $(wc -c < "$APP_DIR/FbClient.jar") bytes"
+  if mkdir -p "$APP_DIR"; then
+    fetch_app FbClient
+    fetch_app FbClient-bb
   else
-    rm -f "$APP_DIR/FbClient.jar.tmp" "$APP_DIR/FbClient.jad.tmp"
-    echo "Warning: could not download FbClient.jad/.jar from GitHub - keeping the old ones in $APP_DIR."
+    echo "Warning: cannot create $APP_DIR - app not copied."
   fi
 fi
 
