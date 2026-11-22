@@ -22,8 +22,6 @@ class UiTask implements Runnable {
     static final int ASSIST_DONE = 8;
     // A screen says which one to show instead (value: "home" or "chats").
     static final int OPEN = 9;
-    // Paint the current screen again (FbMidlet.again).
-    static final int REPAINT = 10;
 
     private final FbMidlet app;
     private final int kind;
@@ -50,8 +48,6 @@ class UiTask implements Runnable {
             app.leave();
         } else if (kind == FEED_EXIT) {
             app.openReader(null); // the page the feed opened
-        } else if (kind == REPAINT) {
-            app.repaintCurrent();
         } else if (kind == OPEN) {
             app.openScreen(value);
         } else if (kind == NEED_USER) {

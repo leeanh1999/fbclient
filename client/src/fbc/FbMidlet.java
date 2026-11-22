@@ -371,17 +371,18 @@ public class FbMidlet extends MIDlet
         showInput(to.length() > 0 ? "To " + to : "Message", "", TextField.ANY);
     }
 
+    // Animation frames, see FrameTick.
+    private final FrameTick frames = new FrameTick(this);
+
     /**
-     * Paint the current screen again once this paint is done (animation:
-     * menu slide-in, eased scroll). A repaint() asked from inside paint()
-     * can be dropped (BlackBerry 9900: the menu stayed part-way down until
-     * the user scrolled); callSerially runs after the paint on every phone.
+     * Paint the current screen again shortly (animation: menu slide-in,
+     * eased and swiped scrolling), from FrameTick's thread.
      */
     void again() {
-        display.callSerially(new UiTask(this, UiTask.REPAINT, null, false));
+        frames.want();
     }
 
-    /** UiTask.REPAINT. */
+    /** A frame of FrameTick. */
     void repaintCurrent() {
         Displayable d = display.getCurrent();
         if (d instanceof javax.microedition.lcdui.Canvas) {
@@ -501,13 +502,14 @@ public class FbMidlet extends MIDlet
 
     /** Closing the player: back to the screen the video was opened from. */
     void closeVideo(VideoView v) {
-        v.dispose();
         if (video == v) {
             video = null;
         }
         Displayable back = beforeVideo;
         beforeVideo = null;
+        // The screen first: the player is freed in the background.
         display.setCurrent(back != null && !(back instanceof VideoView) ? back : (Displayable) canvas);
+        v.dispose();
     }
 
     /** "Next" in the player: the server finds the following video. */

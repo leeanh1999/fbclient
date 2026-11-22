@@ -89,7 +89,10 @@ the reader; it asks `/a` without `m=` and shows plain screenshots (text in the i
 mode drew it with phone fonts, which cut lines short with "...") · `ImageSource` (those screens' images for `ImageLoader`)
 · `Splash` / `SplashTick` (logo loading screen: the browser view switching Facebook/Messenger,
 the feed and chat screens opened from another screen until their first reply)
-· `Kinetic` (touch scrolling that goes on after a swipe, stepped in each screen's paint) · `Lights`
+· `Kinetic` (touch scrolling that goes on after a swipe, stepped in each screen's paint) · `FrameTick`
+(animation frames: `FbMidlet.again()` from a paint asks for one more, repainted 25 ms later from its
+thread; not `repaint()` in `paint()`, which BlackBerry drops, nor chained `callSerially`, which
+kept key events waiting) · `PlayerClose` (frees a video player off the UI thread) · `Lights`
 (keeps the screen lit during video: Nokia `DeviceControl` via `NokiaLights`, loaded by name only
 where the class exists; `flashBacklight` every 20 s on other phones, ended with `flashBacklight(0)` on close; none on
 BlackBerry, where it blinks the light. BlackBerry's back key reaches the player as `cmdPageBack`)

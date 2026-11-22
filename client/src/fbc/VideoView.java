@@ -358,7 +358,7 @@ class VideoView extends Canvas implements Runnable, PlayerListener {
         Player p = player;
         player = null;
         if (p != null) {
-            p.close();
+            new Thread(new PlayerClose(p)).start(); // can take seconds
         }
     }
 
