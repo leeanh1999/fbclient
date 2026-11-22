@@ -39,7 +39,8 @@ class MenuOverlay {
     private static final int C_TILE = 0xF0F2F5;
     private static final int C_BLUE = 0x1877F2;
     private static final int C_SEL = 0xE7F3FF;
-    private static final int HEADER_H = 30;
+    // Title row ("Menu" and the page): its font's height plus room.
+    private int headerH = 30;
 
     private final int[] items;
     private int[] dim;
@@ -136,7 +137,7 @@ class MenuOverlay {
         if (y < panelY) {
             return -2;
         }
-        int ty = y - panelY - HEADER_H;
+        int ty = y - panelY - headerH;
         if (ty < 0) {
             return -1;
         }
@@ -155,13 +156,14 @@ class MenuOverlay {
         rows = (items.length + cols - 1) / cols;
         tileW = w / cols;
         int fh = font.height();
+        headerH = fh + 14;
         // Icon in proportion to the text (about twice its height), then
         // shrunk only if the rows would not fit in 85% of the view.
         iconD = Math.max(28, Math.min(72, Math.min(fh * 2, tileW - 16)));
-        int maxTileH = (vh * 85 / 100 - HEADER_H - 8) / rows;
+        int maxTileH = (vh * 85 / 100 - headerH - 8) / rows;
         tileH = Math.min(iconD + fh + 16, maxTileH);
         iconD = Math.max(20, Math.min(iconD, tileH - fh - 14));
-        panelY = vh - HEADER_H - rows * tileH - 8;
+        panelY = vh - headerH - rows * tileH - 8;
     }
 
     void paint(Graphics g, int w, int vh, TextFont font, boolean showSel, String url) {
@@ -184,7 +186,7 @@ class MenuOverlay {
         for (int i = 0; i < items.length; i++) {
             int a = items[i];
             int tx = (i % cols) * tileW;
-            int ty = top + HEADER_H + (i / cols) * tileH;
+            int ty = top + headerH + (i / cols) * tileH;
             int cx = tx + tileW / 2;
             int cy = ty + 4 + d / 2;
             if (showSel && i == sel) {

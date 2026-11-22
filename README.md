@@ -69,7 +69,7 @@ page (`data-video-id`/`data-video-url`), loading more of the feed or swiping ree
 
 API: `GET /a?id=&w=&h=&z=&f=jpg|png&q=&r=&hash=&key=&op=...`
 
-`r=1.5` / `r=2` (Settings → Resolution → 2/3 / Half): the page is rendered with 1/r of the device
+`r=1.5` / `r=2` (not set by the app any more): the page is rendered with 1/r of the device
 scale factor, so the image is 2/3 or 1/2 of the phone's size per side (~44% / 25% of the pixels
 to send and decode) with JPEG quality at least 80 (scaling magnifies artifacts); the phone scales
 it back up once per frame (`Net.fitScreen`: x1.5 turns every 2 pixels into 3, x2 every pixel
@@ -165,7 +165,7 @@ session's next request waits for it. Meanwhile the phone shows a white splash wi
 until a reply to a request sent after it arrives.
 
 Overscan (`ov` = % of view height, client sends 100, or 50 after running out of memory, when frames
-average over 450 ms to download + decode (e.g. Nokia E6), or when Settings → Frame size is "Short";
+average over 450 ms to download + decode (e.g. Nokia E6);
 saved in RMS since a change relaunches the browser on the server): in the mobile view the viewport is rendered
 `ov`% taller above and below the phone's view; `X-Oy` says where the view starts in the image.
 `op=scroll` moves the view inside that buffer and re-centres it by scrolling the window (falls back
@@ -297,8 +297,9 @@ BIS/MDS (none). The letter keys W E R / S D F / Z X C act as 1–9, Q as #, A as
 
 If the emulator locks the jar: `OUT=dist-new sh client/build-emu.sh`.
 
-Other settings use defaults (access key empty, zoom 100%, JPEG, quality 75; tuned for WiFi phones
-like the Nokia E6) and can be changed in Menu → Settings.
+Menu → Settings has the server, the access key, the connection (BlackBerry) and the text size. The
+rest uses fixed defaults (zoom 100%, JPEG, quality 75, full resolution); settings saved by older
+versions for those go back to them.
 
 Frames: after every action the client polls every 250 ms until 3 unchanged frames (max 6 s).
 
@@ -342,4 +343,3 @@ arrow key only brings it back (other keys act and show it too).
 | 0 | type text |
 | * / left soft | open/close menu |
 
-If images don't show, switch **Image format** to PNG in Settings (some phones lack JPEG decoding).

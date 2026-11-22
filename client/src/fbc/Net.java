@@ -287,8 +287,7 @@ class Net implements Runnable {
                     }
                     throw new Exception("Low memory, using smaller frames");
                 } catch (Exception e) {
-                    throw new Exception(app.png
-                            ? "Bad image" : "JPEG unsupported? Use PNG in Settings");
+                    throw new Exception("Bad image");
                 }
                 if (hash != null) {
                     lastHash = hash;

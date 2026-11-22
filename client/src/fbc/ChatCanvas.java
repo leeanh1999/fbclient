@@ -373,8 +373,10 @@ class ChatCanvas extends Canvas implements Runnable, ImageSource {
 
     // ---- Layout ----
 
+    /** A chat row: the avatar or the name and last-message lines, whichever is taller (phone fonts vary a lot). */
     private int rowH() {
-        return AVATAR + 16;
+        int text = FeedPost.size(15, true).height() + FeedPost.size(13, true).height() + 2;
+        return Math.max(AVATAR, text) + 14;
     }
 
     private synchronized Vector layout() {

@@ -89,8 +89,8 @@ public class FbMidlet extends MIDlet
     volatile ReaderCanvas reader;
 
     private Form settingsForm;
-    private TextField tfServer, tfKey, tfZoom, tfQuality;
-    private ChoiceGroup cgFormat, cgBbConn, cgOverscan, cgRes, cgTextSize;
+    private TextField tfServer, tfKey;
+    private ChoiceGroup cgBbConn, cgTextSize;
     int textFont = TextFrame.SIZE_DEFAULT;
     // Former font setting (bitmap fonts, gone): still in the saved record so
     // the layout of RMS stays the same; unused.
@@ -640,11 +640,6 @@ public class FbMidlet extends MIDlet
         settingsForm = new Form("Settings");
         tfServer = new TextField("Server", server, 128, TextField.URL);
         tfKey = new TextField("Access key", key, 64, TextField.ANY);
-        tfZoom = new TextField("Zoom %", String.valueOf(zoom), 3, TextField.NUMERIC);
-        tfQuality = new TextField("JPEG quality", String.valueOf(quality), 2, TextField.NUMERIC);
-        cgFormat = new ChoiceGroup("Image format", Choice.EXCLUSIVE,
-                new String[] {"JPEG (small)", "PNG (compatible)"}, null);
-        cgFormat.setSelectedIndex(png ? 1 : 0, true);
         settingsForm.append(tfServer);
         settingsForm.append(tfKey);
         if (blackberry) {
@@ -653,17 +648,6 @@ public class FbMidlet extends MIDlet
             cgBbConn.setSelectedIndex(bbConn, true);
             settingsForm.append(cgBbConn);
         }
-        settingsForm.append(tfZoom);
-        settingsForm.append(cgFormat);
-        settingsForm.append(tfQuality);
-        cgOverscan = new ChoiceGroup("Frame size", Choice.EXCLUSIVE,
-                new String[] {"Tall (smoother scroll)", "Short (faster phone)"}, null);
-        cgOverscan.setSelectedIndex(overscan > OVERSCAN_LOW_MEM ? 0 : 1, true);
-        settingsForm.append(cgOverscan);
-        cgRes = new ChoiceGroup("Resolution", Choice.EXCLUSIVE,
-                new String[] {"Full (sharp)", "2/3 (balanced)", "Half (fastest)"}, null);
-        cgRes.setSelectedIndex(res, true);
-        settingsForm.append(cgRes);
         cgTextSize = new ChoiceGroup("Text size", Choice.EXCLUSIVE, TextFrame.SIZE_NAMES, null);
         cgTextSize.setSelectedIndex(textFont, true);
         settingsForm.append(cgTextSize);
@@ -703,15 +687,6 @@ public class FbMidlet extends MIDlet
             if (cgBbConn != null) {
                 bbConn = cgBbConn.getSelectedIndex();
             }
-            zoom = clamp(parseInt(tfZoom.getString(), DEFAULT_ZOOM), 25, 200);
-            quality = clamp(parseInt(tfQuality.getString(), DEFAULT_QUALITY), 10, 95);
-            png = cgFormat.getSelectedIndex() == 1;
-            int ov = cgOverscan.getSelectedIndex() == 0 ? OVERSCAN : OVERSCAN_LOW_MEM;
-            if (ov != overscan) {
-                overscan = ov;
-                frameAuto = false;
-            }
-            res = cgRes.getSelectedIndex();
             textFont = cgTextSize.getSelectedIndex();
             TextFrame.setTextFont(textFont);
             TextFrame.setZoom(zoom);
@@ -878,6 +853,13 @@ public class FbMidlet extends MIDlet
         } finally {
             closeStore(rs);
         }
+        // Zoom, image format and quality, resolution are no longer in Settings
+        // (they were for the screenshot view): saved ones from older versions
+        // go back to the defaults.
+        zoom = DEFAULT_ZOOM;
+        quality = DEFAULT_QUALITY;
+        png = false;
+        res = RES_FULL;
         TextFrame.setTextFont(textFont);
         TextFrame.setZoom(zoom);
         if (clientId.length() == 0) {
